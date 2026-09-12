@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixelart"
+version = "0.1.0"
+description = "图片 → 2.5D 像素风（静态图 / 无缝循环视频）转换器"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "opencv-python-headless>=4.9",
+    "onnxruntime>=1.17",
+]
+
+[project.optional-dependencies]
+# 跑 WGSL 数值验收用（tools/wgsl_lab.py）。
+# 它让着色器移植可以在无头环境里与 numpy 逐位比对，
+# 而不是靠"看截图" —— 见 docs/arch-02-webgpu.md。
+webgpu = ["wgpu>=0.20"]
+dev = ["pytest>=8.0"]
+video = ["imageio-ffmpeg>=0.5"]
+
+[project.scripts]
+pixelart = "pixelart.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

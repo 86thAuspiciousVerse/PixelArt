@@ -1,0 +1,13 @@
+# 直接依赖（开发时也可用 pip install -e ".[dev]"）
+numpy>=1.26
+pillow>=10.0
+opencv-python-headless>=4.9
+onnxruntime>=1.17
+
+# 可选：需要输出 MP4 时才装（自带 ffmpeg 二进制，无需系统安装）
+# imageio-ffmpeg>=0.5
+
+# 可选：只有跑 WGSL 数值验收（tools/wgsl_lab.py、tests/test_webgpu_parity.py）
+# 时才需要。它能在无头环境里执行 WGSL，让着色器移植**可以数值验收**而不是靠看图。
+# 不装的话相关测试会自动 skip，不影响主流程。
+# wgpu>=0.20

@@ -1,0 +1,3335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pixelart · 调参台</title>
+<style>
+  /* ══════════════════════════════════════════════════════════════════
+     设计说明：暗房光学仪器台。
+
+     一个功能性的硬约束决定了整个配色 —— **界面外壳必须是中性的**。
+     这是个用来判断像素画**颜色**的工具；如果外壳带明显的色相，
+     操作者的色感会被同时对比效应带偏（尤其相邻的取景框边缘）。
+     所以：外壳一律近中性深灰，琥珀色只出现在仪表读数与操作控件上，
+     绝不贴在画面旁边。
+
+     字体同理不用网络字体：本地仪器就该离线可用，而且
+     Bahnschrift（Windows 自带，源自 DIN 1451 工程字）比任何
+     Google 字体都更贴"精密仪器"这个语境。数字用等宽，读数跳动时不会抖。
+     ══════════════════════════════════════════════════════════════════ */
+  :root{
+    --chassis:#0e0e10; --panel:#16161a; --raised:#1e1e23; --sunken:#0a0a0c;
+    --line:#2a2a31; --line-hi:#3a3a44;
+    --ink:#e8e6e0; --ink-2:#9d9a92; --ink-3:#6a6862;
+    --amber:#e0a03a; --amber-dim:#8a6420; --amber-glow:rgba(224,160,58,.14);
+    --ok:#6fae5c; --warn:#e0a03a; --bad:#cf5f4a;
+    --ro-h:64px;   /* 仪表条高度：运行时被 #roHandle 拖拽覆盖并存 localStorage */
+    --disp:"Bahnschrift","DIN Alternate","Archivo Narrow","Segoe UI Variable Display",system-ui,sans-serif;
+    --mono:"Cascadia Mono",Consolas,"SF Mono",Menlo,ui-monospace,monospace;
+    --rail:336px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--chassis); color:var(--ink);
+    font-family:var(--disp); font-size:13px; line-height:1.5;
+    display:flex; flex-direction:column; min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* 底纹：极淡的像素网格 + 颗粒，交代"这是个像素工具"但不喧宾夺主 */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.5;
+    background-image:
+      linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+    background-size:16px 16px;
+  }
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:1;
+    background:radial-gradient(ellipse 120% 80% at 50% -10%,transparent 40%,rgba(0,0,0,.55) 100%);
+  }
+
+  /* ─────────────────────────── 台头 ─────────────────────────── */
+  .masthead{
+    position:relative; z-index:2; display:flex; align-items:center; gap:20px;
+    padding:14px 22px; border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,var(--panel),var(--chassis));
+  }
+  .brand{display:flex; align-items:baseline; gap:12px; flex:none}
+  .brand h1{
+    font-size:19px; font-weight:500; letter-spacing:.16em; text-transform:uppercase;
+  }
+  .brand .mk{
+    font-family:var(--mono); font-size:10px; letter-spacing:.1em; color:var(--amber-dim);
+    border:1px solid var(--line-hi); padding:2px 6px; border-radius:3px;
+  }
+  .brand .sub{font-family:var(--mono); font-size:10.5px; color:var(--ink-3); letter-spacing:.06em}
+
+  .picker{display:flex; align-items:center; gap:10px; flex:1; min-width:0}
+  /* 「素材」标签：把选择区的语义说清楚 —— 用户反馈这里原先不明确 */
+  .picklabel{
+    font-size:10px; letter-spacing:.15em; text-transform:uppercase;
+    color:var(--ink-3); flex:none;
+  }
+  .picker select{
+    font-family:var(--mono); font-size:12px; color:var(--ink);
+    background:var(--sunken); border:1px solid var(--line-hi); border-radius:4px;
+    padding:6px 8px; min-width:210px; max-width:280px; cursor:pointer;
+  }
+  .picker select:hover{border-color:var(--amber-dim)}
+  .picker select:focus{outline:none; border-color:var(--amber-dim); box-shadow:0 0 0 2px var(--amber-glow)}
+  .picker .meta{font-family:var(--mono); font-size:10.5px; color:var(--ink-3); white-space:nowrap}
+
+  /* 缩略图做成按钮：明确「可点」 */
+  .thumbwrap{
+    position:relative; width:42px; height:42px; padding:0; flex:none;
+    border:1px solid var(--line-hi); border-radius:3px; background:var(--sunken);
+    cursor:pointer; overflow:hidden;
+  }
+  .thumbwrap:hover{border-color:var(--amber-dim)}
+  .thumbwrap:hover .thumbhint{opacity:1}
+  .thumb{width:100%; height:100%; object-fit:cover; image-rendering:pixelated; display:block}
+  .thumbhint{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:9.5px; letter-spacing:.08em; color:#1a1206; background:rgba(224,160,58,.9);
+    opacity:0; transition:opacity .14s;
+  }
+
+  .acts{display:flex; align-items:center; gap:8px; flex:none}
+  button{
+    font-family:var(--disp); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--ink-2); background:var(--raised); border:1px solid var(--line-hi);
+    border-radius:4px; padding:7px 13px; cursor:pointer;
+    transition:background .13s,color .13s,border-color .13s;
+  }
+  button:hover{background:#26262c; color:var(--ink); border-color:#4a4a56}
+  button:active{transform:translateY(1px)}
+  button.primary{
+    color:#1a1206; background:var(--amber); border-color:#f0b34c; font-weight:500;
+  }
+  button.primary:hover{background:#f0b34c; color:#1a1206}
+  button:disabled{opacity:.42; cursor:not-allowed; transform:none}
+
+  /* ─────────────────────────── 工作台 ─────────────────────────── */
+  .bench{
+    position:relative; z-index:2; flex:1; display:grid;
+    grid-template-columns:var(--rail) minmax(0,1fr); gap:1px;
+    background:var(--line); min-height:0;
+  }
+
+  /* ── 滚动条：统一 WebKit 与 Firefox ──
+     ⚠️ 左右两栏都必须套 .scroll。第一版只给左侧窄轨写了，
+     右侧取景台的滚动条还是系统默认样式，两栏并排看着很割裂（用户指出）。 */
+  .scroll{scrollbar-width:thin; scrollbar-color:#303038 var(--sunken)}
+  .scroll::-webkit-scrollbar{width:10px;height:10px}
+  .scroll::-webkit-scrollbar-track{background:var(--sunken)}
+  .scroll::-webkit-scrollbar-thumb{
+    background:#303038; border-radius:5px; border:2px solid var(--sunken);
+  }
+  .scroll::-webkit-scrollbar-thumb:hover{background:#43434f}
+  .scroll::-webkit-scrollbar-thumb:active{background:var(--amber-dim)}
+  .scroll::-webkit-scrollbar-corner{background:var(--sunken)}
+
+  /* ── 左：控制窄轨（密集、可滚） ── */
+  .rail{
+    background:var(--panel); overflow-y:auto; padding:0 0 40px; min-height:0;
+  }
+
+  .grp{border-bottom:1px solid var(--line)}
+  .grp > summary{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:11px 16px; cursor:pointer; list-style:none;
+    font-size:11px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-2);
+    transition:background .13s,color .13s;
+  }
+  .grp > summary:hover{background:#1a1a1f; color:var(--ink)}
+  .grp > summary::-webkit-details-marker{display:none}
+  .grp > summary::after{
+    content:""; width:6px; height:6px; border-right:1.5px solid var(--ink-3);
+    border-bottom:1.5px solid var(--ink-3); transform:rotate(45deg) translateY(-2px);
+    transition:transform .16s;
+  }
+  .grp[open] > summary::after{transform:rotate(-135deg) translateY(-1px)}
+  .grp[open] > summary{color:var(--amber)}
+  .grp .body{padding:4px 16px 15px}
+
+  .row{margin:9px 0}
+  .row .lab{display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:4px}
+  .row .lab span:first-child{font-size:12px; color:var(--ink-2)}
+  .row .val{
+    font-family:var(--mono); font-size:11.5px; color:var(--amber);
+    font-variant-numeric:tabular-nums; letter-spacing:.02em;
+  }
+  .row .hint{
+    font-family:var(--mono); font-size:10px; color:var(--ink-3); margin-top:3px;
+    letter-spacing:.01em; line-height:1.45;
+  }
+  .row .hint.warn{color:#b07b3a}
+
+  input[type=range]{
+    -webkit-appearance:none; appearance:none; width:100%; height:18px;
+    background:transparent; cursor:ew-resize; display:block;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:3px; background:var(--sunken); border:1px solid var(--line); border-radius:2px;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:11px; height:15px; margin-top:-7px;
+    background:var(--ink-2); border:1px solid #0a0a0c; border-radius:2px;
+    transition:background .12s;
+  }
+  input[type=range]:hover::-webkit-slider-thumb{background:var(--amber)}
+  input[type=range]::-moz-range-track{height:3px;background:var(--sunken);border:1px solid var(--line)}
+  input[type=range]::-moz-range-thumb{width:10px;height:15px;background:var(--ink-2);border:1px solid #0a0a0c;border-radius:2px}
+
+  select.mini, input.mini{
+    font-family:var(--mono); font-size:11.5px; color:var(--ink); width:100%;
+    background:var(--sunken); border:1px solid var(--line-hi); border-radius:3px;
+    padding:5px 7px;
+  }
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:9px}
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:7px}
+
+  /* 开关 */
+  .sw{
+    display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+    padding:5px 0; font-size:11.5px; color:var(--ink-2);
+  }
+  .sw input{display:none}
+  .sw i{
+    width:30px; height:16px; border-radius:9px; background:var(--sunken);
+    border:1px solid var(--line-hi); position:relative; transition:background .15s,border-color .15s; flex:none;
+  }
+  .sw i::after{
+    content:""; position:absolute; top:1.5px; left:1.5px; width:11px; height:11px;
+    border-radius:50%; background:var(--ink-3); transition:transform .15s,background .15s;
+  }
+  .sw input:checked + i{background:var(--amber-glow); border-color:var(--amber-dim)}
+  .sw input:checked + i::after{transform:translateX(14px); background:var(--amber)}
+  .sw.wide{flex:1}
+
+  .colorrow{display:flex; align-items:center; gap:9px; margin:7px 0}
+  .colorrow input[type=color]{
+    -webkit-appearance:none; appearance:none; width:38px; height:24px; padding:0;
+    background:none; border:1px solid var(--line-hi); border-radius:3px; cursor:pointer; flex:none;
+  }
+  .colorrow input[type=color]::-webkit-color-swatch-wrapper{padding:2px}
+  .colorrow input[type=color]::-webkit-color-swatch{border:1px solid #000;border-radius:2px}
+  .colorrow .chex{font-family:var(--mono); font-size:11px; color:var(--ink-2)}
+  .colorrow.auto{opacity:.4; pointer-events:none}
+
+  /* ── 右：取景台（主导，粘性） ── */
+  .stagecol{
+    background:var(--chassis); overflow-y:auto; padding:20px 24px 28px; min-height:0;
+    display:flex; flex-direction:column; gap:16px;
+  }  /* 取景台：可滚动，内容用 margin:auto 居中（这样放大超出时不会裁掉左上角） */
+  .stage{
+    position:relative; background:var(--sunken);
+    border:1px solid var(--line-hi); border-radius:5px;
+    padding:14px; display:flex; overflow:hidden; flex:1; min-height:420px;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.6), 0 18px 44px -22px #000;
+  }
+  /* ⚠️ 画布式查看后这里**不能再有滚动**：平移走 #world 的 transform，
+     badge/plate 绝对定位在本层——若保留滚动它们会跟着内容"飞走"。
+     原来那条「载入扫光」::after 动画也删了：fill-mode:both 让它永久停在
+     top:104%，画布往下拖会拖进这条停泊的琥珀光带（用户实测的"黄色光晕"）。 */
+  .stage.zoomed{cursor:grab}
+
+  /* ⚠️ 显示尺寸**只由 JS 按「网格 × 整数缩放档」设定**，绝不用 max-width 兜底。
+     踩过的坑：原来 img 用 max-width:100%，于是拖动参数时（为了提速渲半分辨率）
+     图片显示尺寸跟着变小、播放时又变大 —— 画面一直在跳。
+     根因是显示尺寸被**渲染分辨率**牵着走，而不是被**逻辑尺寸**决定。
+     现在 width/height 由 JS 明确设定，渲染分辨率怎么变都不影响显示大小。 */
+  .stagebox{position:relative; margin:auto; flex:none; line-height:0}
+  /* 画布：它的**后备缓冲**就是像素网格尺寸，CSS 尺寸由 JS 设成网格×整数倍。
+     所以它是 1:1 上屏的（不缩放），像素方块天然方正。 */
+  .stagebox canvas{
+    display:none; width:100%; height:100%; background:#000;
+    box-shadow:0 0 0 1px #000; image-rendering:pixelated;
+  }
+  /* GPU 后端接管时用画布，服务端后端继续用 img。
+     两者**互斥显示**，但共用同一个 stagebox 的尺寸逻辑 ——
+     所以切换后端不会让画面尺寸跳一下。 */
+  .stagebox.gpu img{display:none}
+  .stagebox.gpu canvas{display:block}
+  /* 调试图：与主画面**同一个取景框**，由世界层 #world 统一承载。
+     布局：0 张独占居中；1-2 张一行并排（渲染图最左）；3 张 2×2（渲染图左上）。
+     查看 = 画布：滚轮以**光标为不动点**缩放（滚动补偿）、中键拖动平移。
+     ⚠️ cell 必须 flex:none —— flex 默认 shrink 会把固定宽的图压出"外冒容器"。 */
+  .debugbar{display:flex;gap:12px;align-items:center;justify-content:center;
+    margin-top:8px;font-size:11px;color:var(--ink-2)}
+  .debugbar .dtag{font-weight:500;letter-spacing:.05em}
+  #world{display:flex;gap:12px;width:max-content;height:max-content;
+    align-items:flex-start}
+  #world.quad{display:grid;grid-template-columns:repeat(2,max-content);align-content:start}
+  #world .dbgcell{position:relative;line-height:0;flex:none}
+  #world .dbgcell img{height:auto;display:block}
+  #world .dbgcell .cap{position:absolute;left:4px;top:4px;font-size:10px;
+    background:rgba(15,15,15,.75);color:#ddd;padding:1px 7px;border-radius:4px;line-height:1.7}
+  .stage.panning, .stage.zoomed.panning{cursor:grabbing}
+  .stagebox img{
+    display:block; width:100%; height:100%;
+    image-rendering:pixelated; background:#000; box-shadow:0 0 0 1px #000;
+  }
+  /* 帧号牌压在画面角上（有意破格，不占版面） */
+  .frameplate{
+    position:absolute; right:24px; bottom:24px; z-index:3;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.08em;
+    color:var(--amber); background:rgba(10,10,12,.82);
+    border:1px solid var(--amber-dim); border-radius:3px; padding:3px 8px;
+    opacity:0; transition:opacity .2s;
+  }
+  .frameplate.on{opacity:1}
+  .badge{
+    position:absolute; left:24px; top:22px; z-index:3;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.07em;
+    border:1px solid var(--line-hi); border-radius:3px; padding:3px 8px;
+    background:rgba(10,10,12,.82); color:var(--ink-2);
+    opacity:0; transition:opacity .2s;
+  }
+  .badge.on{opacity:1}
+  .badge.busy{color:var(--amber); border-color:var(--amber-dim)}
+
+  .scrub{display:flex; align-items:center; gap:12px}
+  .scrub input[type=range]{flex:1}
+  /* 后端指示/切换：与工具条其它按钮同风格，但用颜色区分状态 */
+  .scrub button.be{
+    color:var(--ok) !important; border-color:var(--ok) !important;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.02em;
+  }
+  .scrub button.be.server{color:var(--ink-3) !important;
+                          border-color:var(--line-hi) !important}
+  .scrub button.be.bad{color:var(--bad) !important; border-color:var(--bad) !important}
+  .scrub .t{font-family:var(--mono); font-size:11px; color:var(--ink-3);
+            font-variant-numeric:tabular-nums; white-space:nowrap}
+
+  /* 缩放控件：默认「适应」，滚轮或 ± 之后就固定下来（不再随窗口变化） */
+  .zoombox{
+    display:flex; align-items:center; gap:4px; flex:none;
+    border:1px solid var(--line); border-radius:4px; background:var(--sunken);
+    padding:2px;
+  }
+  .zoombox button{
+    padding:3px 7px; font-size:11px; letter-spacing:0; text-transform:none;
+    border-color:transparent; background:transparent; color:var(--ink-2);
+  }
+  .zoombox button:hover{background:var(--raised); color:var(--ink); border-color:var(--line-hi)}
+  .zoombox #zoomTag{
+    font-family:var(--mono); font-size:11px; color:var(--amber);
+    font-variant-numeric:tabular-nums; min-width:44px; text-align:center;
+    padding:0 2px; cursor:default;
+  }
+  .zoombox #zoomTag.auto{color:var(--ink-3)}
+  .zoombox #btnZoomFit{padding:3px 8px}
+
+  /* 扫描台 */
+  .sweep{border:1px solid var(--line); border-radius:5px; background:var(--panel); overflow:hidden}
+  .sweep > summary{
+    padding:10px 16px; cursor:pointer; list-style:none;
+    display:flex; align-items:center; gap:14px;
+    font-size:11px; letter-spacing:.15em; text-transform:uppercase; color:var(--ink-2);
+  }
+  .sweep > summary::-webkit-details-marker{display:none}
+  .sweep > summary:hover{background:#1a1a1f;color:var(--ink)}
+  .sweep[open] > summary{color:var(--amber); border-bottom:1px solid var(--line)}
+  .sweep .body{padding:14px 16px; display:flex; flex-direction:column; gap:12px}
+  .sweep .ctl{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .sweep img{width:100%; display:block}
+  /* ⭐ 扫描结果自己滚 —— 旧版直接塞在栏目流里，被视口底边裁掉一半 */
+  .sweepOut{
+    max-height:46vh; overflow:auto; border:1px solid var(--line);
+    border-radius:3px; background:var(--sunken);
+  }
+  .sweep .chips{display:flex; gap:8px; flex-wrap:wrap}
+  .sweep .chips button{padding:3px 10px; font-family:var(--mono); font-size:11px}
+  .sweep .chips button:hover{border-color:var(--amber); color:var(--amber)}
+
+  /* ─────────────────────────── 仪表读数条 ───────────────────────────
+   *
+   * ⭐ 高度与每栏宽度都**可拖拽**（用户要求）：
+   *    · 总高度 —— 拖 `#roHandle`（仪表条顶边），写入 --ro-h，存 localStorage
+   *    · 每栏宽度 —— 拖栏与栏之间的 `.ro-div` 分割线，按栏名存 localStorage
+   *    · 横向放不下时**滚动**而不是吞掉内容（旧版会直接截断）
+   */
+  #roHandle{
+    height:5px; cursor:ns-resize; background:#2a2a31;
+    border-top:1px solid var(--line-hi);
+  }
+  #roHandle:hover{background:var(--amber-dim)}
+  .readout{
+    position:relative; z-index:2; display:flex; align-items:stretch; gap:1px;
+    background:var(--line); border-top:1px solid var(--line-hi);
+    height:var(--ro-h, 64px); min-height:36px;
+    overflow-x:auto; overflow-y:hidden;
+  }
+  .cell{
+    flex:1 1 0; min-width:96px; background:linear-gradient(180deg,var(--raised),var(--panel));
+    padding:8px 14px; display:flex; flex-direction:column; gap:3px;
+    /* ⭐ 按用户要求：文字要感知可用高度 —— 高度拖大就换行显示更多内容，
+     *    高度小时多余行被裁掉（而不是永远单行省略号）。 */
+    overflow:hidden; min-height:0;
+  }
+  .ro-div{
+    flex:0 0 7px; cursor:ew-resize; background:var(--line);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .ro-div::after{content:""; width:1px; height:26px; background:#3a3a44}
+  .ro-div:hover{background:var(--amber-dim)}
+  .ro-div:hover::after{background:var(--amber)}
+  .cell .k{
+    font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3);
+  }
+  .cell .v{
+    font-family:var(--mono); font-size:14px; color:var(--ink);
+    font-variant-numeric:tabular-nums; letter-spacing:.01em;
+    /* ⭐ 随可用高度自动换行：拖高仪表条能看到更多行，超出部分裁掉 */
+    white-space:normal; word-break:break-word; overflow:hidden;
+  }
+  .cell .v.ok{color:var(--ok)} .cell .v.bad{color:var(--bad)} .cell .v.warn{color:var(--warn)}
+  /* 幅度条：三段一眼看出动得够不够 */
+  .amp{display:flex; height:6px; border-radius:3px; overflow:hidden; background:var(--sunken); margin-top:1px}
+  .amp i{display:block; height:100%}
+  .amp .s{background:#2b2b33} .amp .f{background:#4a4232} .amp .v{background:#8a6420} .amp .g{background:var(--amber)}
+
+  /* 光源位置标记：叠在画面上，随 XY 滑杆实时移动 */
+  .marker{
+    position:absolute; z-index:4; width:0; height:0; pointer-events:none;
+    opacity:0; transition:opacity .16s;
+  }
+  .marker.on{opacity:1}
+  .marker i{
+    position:absolute; display:block; background:var(--amber);
+    box-shadow:0 0 0 1px rgba(10,10,12,.85);
+  }
+  .marker .ring{
+    width:46px; height:46px; left:-23px; top:-23px; background:none;
+    border:1px dashed var(--amber); border-radius:50%;
+    box-shadow:0 0 0 1px rgba(10,10,12,.7), inset 0 0 0 1px rgba(10,10,12,.45);
+    animation:ring 2.4s ease-in-out infinite;
+  }
+  .marker .dot{width:7px; height:7px; left:-3.5px; top:-3.5px; border-radius:50%}
+  .marker .h{width:30px; height:1px; left:-15px; top:0}
+  .marker .v{width:1px; height:30px; left:0; top:-15px}
+  .marker .tag{
+    position:absolute; left:30px; top:-32px; white-space:nowrap;
+    font-family:var(--mono); font-size:10px; letter-spacing:.05em;
+    color:var(--amber); background:rgba(10,10,12,.85);
+    border:1px solid var(--amber-dim); border-radius:3px; padding:2px 6px;
+  }
+  @keyframes ring{0%,100%{transform:scale(1);opacity:.9}50%{transform:scale(1.14);opacity:.5}}
+  /* 副光源标记：同一套形状，**青色系**与主光（琥珀）区分；无准线（那是主光专属） */
+  .marker.m2 i{background:#4ecdc4}
+  .marker.m2 .ring{border-color:#4ecdc4}
+  .marker.m2 .tag{color:#4ecdc4; border-color:#0f6e56}
+
+  /* 贯穿全图的十字准线：光靠一个点看不出 X/Y 到底在哪一列/哪一行。
+     拖滑杆时它**实时跟随**（在滑杆的 oninput 里就更新，不等渲染返回）。 */
+  .crosshair{
+    position:absolute; z-index:3; pointer-events:none; opacity:0;
+    transition:opacity .16s;
+    background:repeating-linear-gradient(from 0deg,
+      var(--amber) 0 2px, transparent 2px 6px);
+  }
+  .crosshair.on{opacity:.42}
+  .crosshair.h{left:0; right:0; height:1px;
+    background:repeating-linear-gradient(to right,
+      var(--amber) 0 2px, transparent 2px 6px)}
+  .crosshair.v{top:0; bottom:0; width:1px;
+    background:repeating-linear-gradient(to bottom,
+      var(--amber) 0 2px, transparent 2px 6px)}
+  /* 边缘刻度：把 X / Y 的数值钉在贴边处，视线不用来回找 */
+  .crosshair.h::after, .crosshair.v::after{
+    position:absolute; font-family:var(--mono); font-size:9.5px;
+    color:var(--amber); background:rgba(10,10,12,.85);
+    border-radius:2px; padding:1px 4px; letter-spacing:.04em;
+  }
+  .crosshair.h::after{content:attr(data-v); left:4px; top:-8px}
+  .crosshair.v::after{content:attr(data-v); top:4px; left:-8px}
+
+  .toast{
+    position:fixed; left:50%; bottom:74px; transform:translate(-50%,14px); z-index:50;
+    background:var(--raised); border:1px solid var(--line-hi); border-left:2px solid var(--amber);
+    border-radius:4px; padding:10px 16px; font-size:12px; color:var(--ink);
+    opacity:0; pointer-events:none; transition:opacity .2s,transform .2s;
+    box-shadow:0 12px 32px -12px #000; max-width:min(560px,86vw);
+  }
+  .toast.on{opacity:1; transform:translate(-50%,0)}
+  .toast.bad{border-left-color:var(--bad)}
+  .toast.ok{border-left-color:var(--ok)}
+
+  /* 拖放提示：整屏覆盖，明确告诉用户「可以松手了」 */
+  .dropzone{
+    position:fixed; inset:0; z-index:60; display:none;
+    align-items:center; justify-content:center;
+    background:rgba(10,10,12,.86); backdrop-filter:blur(2px);
+  }
+  .dropzone.on{display:flex}
+  .dropzone .inner{
+    border:2px dashed var(--amber-dim); border-radius:12px;
+    padding:52px 76px; text-align:center; background:rgba(22,22,26,.9);
+  }
+  .dropzone h2{font-size:17px; font-weight:500; color:var(--amber); letter-spacing:.06em}
+  .dropzone p{margin-top:8px; font-family:var(--mono); font-size:11.5px; color:var(--ink-2)}
+
+  /* 载入时控件的参差入场（只此一处动效，不做零散的 hover 抖动） */
+  .stagger{animation:rise .34s cubic-bezier(.2,.7,.3,1) both}
+  @keyframes rise{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion: reduce){
+    *{animation:none !important; transition:none !important}
+  }
+  @media (max-width:1080px){
+    :root{--rail:290px}
+    /* ⚠️ 这里原来有一条 `.stage img{max-height:52vh}` —— 已删除。
+       它属于"显示尺寸由 CSS 决定"的旧设计，会和 JS 设定的取景框尺寸打架，
+       在窄窗口下把画面压扁。尺寸只由「网格 × 整数 zoom」决定（见 applyZoom）。 */
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="brand">
+    <h1>pixelart</h1>
+    <span class="mk">M3</span>
+    <span class="sub">调参台</span>
+  </div>
+  <div class="picker">
+    <span class="picklabel">素材</span>
+    <button class="thumbwrap" id="thumbBtn" title="点击更换素材">
+      <img class="thumb" id="thumb" alt="">
+      <span class="thumbhint">更换</span>
+    </button>
+    <select id="asset" title="选择素材"></select>
+    <span class="meta" id="assetMeta"></span>
+    <button id="btnUpload" title="上传你自己的图片（也可以直接拖到画面上）">上传图片…</button>
+    <input type="file" id="fileInput" accept="image/*" hidden>
+  </div>
+  <div class="acts">
+    <button id="btnPreview">渲染预览</button>
+    <button id="btnReset">复位</button>
+    <button id="btnSave">存参数</button>
+    <button id="btnLoad">取参数</button>
+    <button id="btnExport" class="primary">全量出图</button>
+    <button id="btnLang" title="切换界面语言 / Switch UI language">EN</button>
+  </div>
+</header>
+
+<main class="bench">
+  <aside class="rail scroll" id="rail"></aside>
+
+  <section class="stagecol scroll" id="stagecol">
+    <div class="stage">
+      <span class="badge" id="badge"></span>
+      <span class="frameplate" id="plate">— / —</span>
+      <div id="world">
+        <span class="stagebox" id="stagebox">
+          <img id="frame" alt="预览">
+          <canvas id="gpuCanvas"></canvas>
+          <i class="crosshair h" id="chH"></i>
+          <i class="crosshair v" id="chV"></i>
+          <span class="marker" id="marker">
+            <i class="ring"></i><i class="h"></i><i class="v"></i><i class="dot"></i>
+            <span class="tag" id="markerTag">光源 自动</span>
+          </span>
+          <span class="marker m2" id="marker2">
+            <i class="ring"></i><i class="dot"></i>
+            <span class="tag" id="marker2Tag">副光源</span>
+          </span>
+        </span>
+      </div>
+    </div>
+    <div class="debugbar">
+      <span class="dtag">调试图</span>
+      <label class="sw" title="暗=近、蓝=远。雾/体积光/视差的共同根，深度估计的灾难在这里一眼可见">
+        <input type="checkbox" id="dbgDepth"><i></i><span>深度图</span></label>
+      <label class="sw" title="模糊亮度 + 90/95/99 分位等亮线（蓝/橙/红）。光源检测的输入：亮核在哪、集不集中">
+        <input type="checkbox" id="dbgLuma"><i></i><span>等亮线</span></label>
+      <label class="sw" title="体积光形状（归一化增强）。调光锥张角/方向/光柱时看几何，不被量化骗">
+        <input type="checkbox" id="dbgVol"><i></i><span>体积光</span></label>
+    </div>
+    <div class="scrub">
+      <button id="btnPlay">播放</button>
+      <input type="range" id="scrub" min="0" max="0" value="0" step="1">
+      <span class="t" id="scrubT">t = 0.00</span>
+      <label class="sw" title="在画面上标出光源位置">
+        <input type="checkbox" id="showMarker"><i></i>
+        <span style="font-size:11px;white-space:nowrap">光源</span>
+      </label>
+      <button id="btnBackend" class="be" title="切换渲染后端">后端：检测中…</button>
+      <span class="zoombox">
+        <button id="btnZoomOut" title="缩小（滚轮也可）">−</button>
+        <span id="zoomTag" title="当前显示倍率">—</span>
+        <button id="btnZoomIn" title="放大（滚轮也可）">+</button>
+        <button id="btnZoomFit" title="恢复自适应（按窗口大小自动选整数倍）">适应</button>
+      </span>
+    </div>
+
+    <details class="sweep">
+      <summary>参数扫描 · 同一画面并排对比多个取值</summary>
+      <div class="body">
+        <div class="ctl">
+          <select class="mini" id="sweepKey" style="max-width:230px"></select>
+          <input class="mini" id="sweepVals" value="0.4, 0.7, 1.1, 1.4" style="flex:1;min-width:180px">
+          <button id="btnSweep">扫描</button>
+        </div>
+        <div class="hint" style="font-size:11px;color:var(--ink-2);line-height:1.7">
+          这是<b>挑「口味」参数</b>用的：选一个参数、给几个取值（逗号分隔，最多 8 个），
+          服务端会用<b>当前的其它参数</b>把同一帧的每个取值版各渲一遍、并排对比 ——
+          一眼看出「色板数 16 和 32 差多少」「雾浓度多高开始发灰」这类没有对错、只有喜好的问题。
+          扫描<b>不会改动</b>当前参数；看完点下方取值条即可把某个值应用过来。
+        </div>
+        <div class="chips" id="sweepChips"></div>
+        <div class="sweepOut scroll"><img id="sweepImg" style="display:none" alt="参数扫描结果（每个取值一列，左起第三个是当前值加亮）"></div>
+      </div>
+    </details>
+  </section>
+</main>
+
+<div id="roWrap">
+  <div id="roHandle" title="上下拖动调整仪表条高度；双击复位"></div>
+  <footer class="readout scroll" id="readout"></footer>
+</div>
+<div class="toast" id="toast"></div>
+<div class="dropzone" id="dropzone">
+  <div class="inner">
+    <h2>松手以载入这张图片</h2>
+    <p>支持 JPG / PNG / WebP / BMP / TIFF / GIF</p>
+  </div>
+</div>
+
+<script src="/api/gpuasset?name=m3_wgsl_uniforms"></script>
+<script src="/api/gpuasset?name=m3_webgpu"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+/* ── 参数表：界面上的每个控件都由这里生成，避免手写 30 个滑杆 ── */
+const SPEC = [
+  {g:"网格与质量", open:true, rebuild:true, rows:[
+    {k:"grid_long", t:"网格长边", min:160, max:480, step:16,
+     hint:"像素网格密度。480 是密集场景「结构可读」的下限（放大 ×4）；预览降到 240 提速 4 倍。"},
+    {k:"work_long", t:"工作分辨率", min:480, max:1920, step:160,
+     hint:"必须是网格的整数倍，否则方块参差。自动取网格 ×4。"},
+    {k:"aspect", t:"画面比例", type:"select",
+     opts:[["native","保持原比例"],["16:9","16:9"],["2.16","2.16"],["1:1","1:1"]],
+     hint:"竖构图务必用「保持原比例」，裁成 16:9 会毁掉大半画面。"},
+  ]},
+  {g:"预处理", open:false, rebuild:true, rows:[
+    {k:"levels", t:"自动色阶", min:0, max:1, step:.05,
+     hint:"低对比素材（夜景/雾天）必须先拉色阶，否则色板被浪费在同色暗部上。"},
+    {k:"sharpen", t:"锐化 USM", min:0, max:1.2, step:.05,
+     hint:"让相邻方块的反差立起来。必须在量化之前做。>0.8 会出振铃。"},
+    {k:"var_gain", t:"边缘保留", min:0, max:120, step:5,
+     hint:"结构感知降采样的权重增益。越大越保细节，也越容易出噪点。"},
+    {k:"detail", t:"细节预算", min:0, max:1, step:.05,
+     hint:"⭐ 低网格救细节的一档：忙碌格子不再取平均值，而是偏向格内最出挑的细节像素（细线、五官、小字）。平坦区不受影响。0 = 关闭；240 网格收益最大，高网格可以不开。"},
+  ]},
+  {g:"天空替换", open:false, rebuild:true, rows:[
+    {k:"sky_on", t:"天空替换", type:"bool",
+     hint:"⭐ 画面里有天空时（深度 ≥ 0.985 且占比 ≥ 2% 才触发），把噪脏的天空换成程序化渐变 + 星场。室内图永远不会触发。在场景构建阶段生效，CPU/GPU 渲染一致。"},
+    {k:"sky_mode", t:"天空预设", type:"select",
+     opts:[["night","夜空 + 星场"],["dusk","暮色 + 稀星"],["day","白昼"]],
+     hint:"夜空：深蓝渐变 + 密集星场；暮色：紫橙渐变 + 稀星；白昼：浅蓝渐变、无星。"},
+    {k:"sky_stars", t:"星密度", min:0, max:2, step:.1,
+     hint:"星星密度倍率。0 = 无星，1 = 标准，2 = 密集。只对夜空/暮色生效。"},
+  ]},
+  {g:"雾（空气透视）", open:true, rows:[
+    {k:"density", t:"雾浓度", min:0, max:2, step:.05, hint:"⚠️ 可用区间很窄"},
+    {k:"power", t:"距离幂次", min:1, max:5, step:.25,
+     hint:"<2 中景就发灰、画面会「糊」。经验值 3。"},
+    {k:"_fogColor", t:"雾色", type:"color", auto:k=>k.fog_r<0,
+     _c:["fog_r","fog_g","fog_b"],
+     hint:"自动值取远景的「中位数」（不是均值，会被光轴带跑）。"},
+    {k:"fog_tint", t:"雾的上色", min:0, max:1, step:.05,
+     hint:"⭐ 控制「整幅图被拉向一个主题色」的强度：1 = 现状（雾色与光柱完全上色）；0 = 雾与光柱去色为中性灰 —— 空气透视的远近明暗保留，但**不改变任何色相**，色彩层次全保留。想保留原始色彩就往 0 拖。"},
+    {k:"fog_sat", t:"雾色饱和度上限", min:0, max:0.8, step:.05,
+     hint:"⚠️ 雾覆盖全部远景，过饱和就等于给远景蒙一层滤镜。不少图片的自动雾色饱和度偏高（极端可到 0.79）。0.40 是经验上限：只对过饱和的雾色生效，其余图片完全不受影响，暖度保留。0 = 不压。"},
+  ]},
+  {g:"体积光与辉光", open:true, rows:[
+    {k:"rays", t:"体积光强度", min:0, max:1.5, step:.05},
+    {k:"rays_sat", t:"散射色饱和度上限", min:0, max:.6, step:.05,
+     hint:"⚠️ 空气散射近乎无色。实测 0.25 是拐点：0.15 会把暖色光抽灰。"},
+    {k:"rays_spread", t:"光源影响范围收敛", min:0, max:2, step:.1,
+     hint:"⚠️ 0 = 全图均匀叠加（旧行为，像蒙滤镜）。>0 按屏幕距离收敛，光更像从那一点发出来。实测 1.0 让近处占比 53%→69%。"},
+    {k:"rays_cone", t:"光锥张角", min:0, max:1.2, step:.05,
+     hint:"0 = 关闭（现在的径向光晕）。>0 时把光塑成锥形：锥内亮、锥外不亮、边缘平滑 —— 配合已有的深度遮挡就会切出直边与硬阴影，这是「光柱」观感的来源。0.5~0.8 起步。"},
+    {k:"rays_shaft", t:"光柱强度", min:0, max:2, step:.1,
+     hint:"⭐ 让光柱真的看得见的那一档。光锥（张角）只负责「塑形」，但体积光整层本身非常微弱，塑形塑不出东西 —— 这个参数是独立的加性层：锥内的空气被照亮（沿柱均匀、随距离衰减、被屏幕阴影切断），自带强度。0.5~1.0 起步；⚠️ 0 = 关闭。"},
+    {k:"rays_dir", t:"光锥方向", min:-180, max:180, step:5,
+     hint:"锥轴方向角（度）。屏幕坐标 y 向下：90 = 向下（灯在头顶往下照）、0 = 向右、-90 = 向上。改方向比改张角更能改变观感。"},
+    {k:"cone_x", t:"锥顶点X", min:-1, max:1, step:.01,
+     hint:"⭐ 锥形与光柱的顶点位置。-1 = 跟随光源（默认，与旧行为一致）；≥0 = 独立放置，允许出画（如太阳在画外的穿窗光束：亮块留在窗上，锥顶点拖到画外）。遮挡与衰减仍以光源为准。"},
+    {k:"cone_y", t:"锥顶点Y", min:-1, max:1, step:.01,
+     hint:"⭐ 同上（纵轴）。配合「体积光」调试图使用最直观：调试图会同时画出光源（绿）与锥顶点（橙）两个十字。"},
+    {k:"light2_on", t:"副光源", type:"bool",
+     hint:"⭐ 双光源：副光源在自己的邻域自动采样散射色（屏幕偏冷、灯泡偏暖，不用手动调色），线性加法混合（物理正确：辐照度直接相加），带各自的深度遮挡与阴影。开启后画面上会标出青色十字。"},
+    {k:"light2_x", t:"副光X", min:0, max:1, step:.01,
+     hint:"副光源位置（横向）。"},
+    {k:"light2_y", t:"副光Y", min:0, max:1, step:.01,
+     hint:"副光源位置（纵向）。"},
+    {k:"light2_gain", t:"副光强度", min:0, max:3, step:.1,
+     hint:"副光源的体积光注入强度。0.5~1.5 起步；两盏都开时注意总注入量（叠加后更容易过曝）。"},
+    {k:"light2_spread", t:"副光范围", min:0, max:2, step:.1,
+     hint:"副光源的影响范围收敛：0 = 全图均匀叠加（旧滤镜感），>0 按屏幕距离收敛。"},
+    {k:"rays_reach", t:"光锥长度", min:0, max:1, step:.05,
+     hint:"1 = 几乎不额外衰减；小值让光柱在画面内就淡掉（「打不到底」的观感）。"},
+    {k:"rays_cone_gain", t:"锥内增益", min:1, max:3, step:.1,
+     hint:"光柱要的是「锥内空气比锥外亮」。实测只靠「锥外减掉」几乎看不出（开/关只差 1.8/255，因为体积光本身注入量就小），所以锥内要有乘性增益。1.6 起步。"},
+    {k:"_light", t:"光源位置", type:"vec2", auto:k=>k.rays_auto_center,
+     _auto:"rays_auto_center", _c:["rays_x","rays_y"],
+     hint:"⚠️ 自动检测常落错地方（实测会落在草丛与地面反光上），务必目视核对。"},
+    {k:"_raysColor", t:"散射色", type:"color", auto:k=>k.rays_r<0,
+     _c:["rays_r","rays_g","rays_b"]},
+    {k:"bloom", t:"辉光", min:0, max:2, step:.05},
+  ]},
+  {g:"像素尾巴", open:false, rows:[
+    {k:"quantize_mode", t:"取色模式", type:"select",
+     opts:[["palette","色板吸附（像素画）"],["continuous","连续色（高保真）"]],
+     hint:"⭐ 色板吸附 = 整图量化到有限色数（经典像素画）；连续色 = 跳过色板吸附、保留抖动与边缘压暗的高保真后处理（相当于把探针那种连续色直接交付）。连续色模式下「色板颜色数」不生效。"},
+    {k:"colors", t:"色板颜色数", min:4, max:128, step:1,
+     hint:"自动色板的颜色上限。32 = 经典像素画；64~128 大幅提升色彩保真度（白楼/玻璃/植被层次立刻回来）。仅色板吸附模式生效。"},
+    {k:"dither", t:"抖动强度", min:0, max:.4, step:.01,
+     hint:"相位锁屏幕空间 —— 拖它整片不会闪。"},
+    {k:"edge_strength", t:"边缘压暗", min:0, max:.6, step:.01,
+     hint:"给物体轮廓描边。⚠️ 粒子是大气不是内容，已单独排除。"},
+    {k:"edge_gain", t:"边缘增益", min:0, max:8, step:.5,
+     hint:"⚠️ 标定值 2.0。7.0 会让密集画面整体压暗 13%。"},
+  ]},
+  {g:"动画幅度", open:true, rows:[
+    {k:"fog_drift", t:"雾漂移", min:0, max:1, step:.05},
+    {k:"flicker", t:"光源闪烁", min:0, max:.6, step:.02},
+    {k:"parallax", t:"视差推拉", min:0, max:1, step:.05,
+     hint:"把深度切 12 层做极缓慢推拉：近层动得多、远层几乎不动 —— 观感收益最大的动画。⭐ 建议 0.5 起步（≈5% 幅宽，动起来一眼可见）；0.25 是轻微呼吸、1.0 会露层边界。⚠️ 它在 t=0 处位移恰好为零（循环闭合的要求），所以「盯着首帧静止图」永远看不出：拖完滑杆会自动跳到 1/4 周期，或直接点播放。GPU 已支持（两个新 pass，定点原子累加）。"},
+    {k:"dust_count", t:"尘埃数量", min:0, max:600, step:10,
+     hint:"0 = 关掉。240 网格上 150~300 比较自然，再多成噪点。"},
+    {k:"dust_bright", t:"尘埃亮度", min:0, max:1.5, step:.05},
+    {k:"dust_twinkle", t:"尘埃闪烁", min:0, max:1.2, step:.05},
+    {k:"dust_fade_far", t:"远处尘埃减弱", min:0, max:1, step:.05,
+     hint:"避免远景浮着一层均匀噪点。"},
+    {k:"dust_light_boost", t:"光源附近增亮", min:1, max:3, step:.1},
+  ]},
+  {g:"输出", open:true, rows:[
+    {k:"seconds", t:"时长（秒）", min:1, max:12, step:.5,
+     hint:"预览保持同样时长、只降 fps —— 这样运动速度读起来才是对的。"},
+    {k:"fps", t:"成片帧率", min:8, max:60, step:1},
+  ]},
+];
+const SCENE_KEYS = ["grid_long","work_long","aspect","levels","sharpen","var_gain","detail","sky_on","sky_mode","sky_stars"];
+
+let P = {};                       // 当前参数
+let defaults = {};
+let frames = [];                  // 已载入的预览帧 URL
+/* ⚠️ frames[] 只在**对应某组参数**时才有意义。
+   踩过的坑（用户报障）：改了尘埃参数 → 单帧重渲了、看着对；
+   但 frames[] 还是上一组参数渲出来的 → 一点播放就"跳回预设效果"。
+   根因是 `frames[]` 只由 renderPreview 构建，**没有任何机制在参数变化时让它失效**。
+   现在用一个显式标记，凡是用到 frames[] 的地方都必须先问 framesValid。 */
+let framesValid = false;
+let frameCount = 0, previewFps = 10;
+let playing = false, playTimer = null, cur = 0;
+let busy = false, sceneStale = false;
+/* ⚠️ "有人在我渲染期间又叫了一次渲染" —— 必须补跑，不能丢。
+ *    详见 `renderPreview()` 里那段说明（丢掉的后果就是首屏永远全黑）。 */
+let renderPending = false;
+let imgCache = new Map();
+
+/* 后端名字，**永不抛** —— 用于诊断。
+ * ⚠️ 必须 try/catch：如果 `backendActive` 其实不在当前作用域里（这文件模块级
+ *    函数与 init() 内部函数混写、缩进不作数，很容易误判），
+ *    直接调用会抛 ReferenceError 并**打断渲染**。诊断本身绝不该成为故障源。 */
+function backendName(){
+  try { return backendActive() ? "gpu" : "server"; }
+  catch (e) { return "THROW:" + (e && e.message); }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 页面自诊断：把**启动进度**与**未捕获异常**回报服务端
+ *
+ * ⚠️ 为什么必须有：这个项目里最贵的一类 bug 是**静默失败** ——
+ *    画面全黑、`submit` 不抛异常、控制台也看不出所以然
+ *    （上一轮抓到 6 个，全部不报错）。用户能给的只有一张截图，
+ *    而截图里"黑"是同一个形态，"卡在哪一步"完全看不到。
+ *
+ *    把进度送回服务端之后，`tools/browser_selftest.py` 那套无头浏览器
+ *    就能**无人值守**地回答"卡在哪一步"。
+ *
+ * 回报落在 `out/m3/params/_page_state.json`（固定名，不随请求增长）。
+ * ══════════════════════════════════════════════════════════════════ */
+const PAGE_STATE = { t0: Date.now(), href: location.search || "(无参数)", steps: [], errors: [] };
+/* ⚠️ 本次运行的标识。体检工具每次带一个一次性 token 打开页面，
+ *    靠它认出"这份报告是这一轮的" —— 于是**不需要删除旧报告**
+ *    （删除是危险操作，而且要额外权限；用一个 token 更干净、也更可靠）。 */
+PAGE_STATE.run = new URLSearchParams(location.search).get("bootcheck") || "";
+let _psTimer = 0;
+
+function psFlush(){
+  clearTimeout(_psTimer);
+  _psTimer = setTimeout(() => {
+    try {
+      fetch("/api/params", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "_page_state", params: PAGE_STATE })
+      }).catch(() => {});
+    } catch (e) { /* 回报失败不能影响页面 */ }
+  }, 150);
+}
+
+function ps(step, extra){
+  const e = { ms: Date.now() - PAGE_STATE.t0, step };
+  if (extra) e.d = extra;
+  PAGE_STATE.steps.push(e);
+  if (PAGE_STATE.steps.length > 60) PAGE_STATE.steps.shift();
+  psFlush();
+}
+
+function psErr(kind, msg){
+  PAGE_STATE.errors.push({ ms: Date.now() - PAGE_STATE.t0, kind, msg: String(msg).slice(0, 500) });
+  if (PAGE_STATE.errors.length > 20) PAGE_STATE.errors.shift();
+  psFlush();
+}
+
+/* ⚠️ 全局兜底。这两条能抓住"抛在 async 里没人接"的错误 ——
+   而没有它们时，这类错误在页面上**什么都看不见**。 */
+window.addEventListener("error", (ev) => {
+  const f = (ev.filename || "").split("/").pop();
+  psErr("error", `${ev.message} @ ${f}:${ev.lineno}:${ev.colno}`);
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  const r = ev.reason;
+  psErr("reject", (r && (r.stack || r.message)) ? (r.stack || r.message) : String(r));
+});
+
+/* ⭐ 作用域探测。
+ *
+ * 用 `typeof` 而不是直接读：读一个**未声明**的标识符会抛 ReferenceError，
+ * 而 `typeof` 对未声明的标识符返回 "undefined"、**不抛**。
+ * 于是这一句能安全地回答："这些名字在当前作用域里到底在不在？"
+ *
+ * 为什么需要它：本文件的模块级函数与 `init()` 内部函数**混在一起**，
+ * 缩进又不作数（全都顶格写）。光靠读代码极易误判谁在谁的里面 ——
+ * 而"模块级函数引用了 init() 内的变量"会抛出 ReferenceError，
+ * 且只在**那条路径**上才炸，很难发现。 */
+function psScopeProbe(){
+  const names = ["gpuReady", "gpuRenderer", "gpuRaf", "gpuBusy", "gpuInfo", "gpuReason",
+                 "backendPref", "backendActive", "gpuSyncCanvas", "gpuEnsureScene",
+                 "gpuPreviewStats", "gpuInitPromise", "initBackend", "gpuBtn",
+                 "gpuPlay", "gpuScheduleAssets", "gpuStatsFromPack", "gpuLoopSelfCheck",
+                 "updateReadoutGpu", "runGpuSelfTest", "_initBackendOnce",
+                 "sceneKeyNow", "assetsKeyNow",
+                 "renderPreview", "applyZoom", "stopPlay", "play",
+                 "logicalSize", "P", "busy", "renderPending"];
+  const probe = {};
+  for (const n of names){
+    try { probe[n] = eval("typeof " + n); } catch (e) { probe[n] = "THROW:" + e.message; }
+  }
+  PAGE_STATE.scope = probe;
+  psFlush();
+}
+
+/* 参数默认值。与服务端 pixelart.tune.TuneParams 保持一致 ——
+   预览网格取 240（不是成片的 480），拖滑杆才跟得上手。 */
+/* ⚠️ 这个对象必须与 `TuneParams` 的字段**完全一致**（少一个 = 该参数永远不会被送出，
+   服务端悄悄用它的默认值，界面看着"对"纯属巧合）。m3_uicheck 有一项对比检查。
+   真踩过：加了 fog_sat / rays_spread 两个滑杆但忘了在这里加字段 ——
+   滑杆中点恰好等于默认值，所以看不出问题，直到有人改了默认值才会炸。 */
+const DEFAULTS = {
+  grid_long:240, work_long:960, aspect:"native", levels:.9, sharpen:.55, var_gain:45,
+  density:.7, power:3, fog_r:-1, fog_g:-1, fog_b:-1, fog_sat:.4, fog_tint:1,
+  rays:.55, rays_auto_center:true, rays_x:.5, rays_y:.5, rays_sat:.25, rays_spread:1,
+  rays_cone:0, rays_dir:80, rays_reach:.8, rays_cone_gain:1.6, rays_shaft:0,
+  cone_x:-1, cone_y:-1,
+  light2_on:false, light2_x:.7, light2_y:.3, light2_gain:1, light2_spread:1,
+  sky_on:false, sky_mode:"night", sky_stars:1, detail:0, quantize_mode:"palette",
+  rays_r:-1, rays_g:-1, rays_b:-1, bloom:.85,
+  colors:32, dither:.1, edge_strength:.35, edge_gain:2,
+  fog_drift:.3, flicker:.16, parallax:0, dust_count:200, dust_bright:.55, dust_twinkle:.55,
+  dust_fade_far:.65, dust_light_boost:1.8,
+  seconds:6, fps:30
+};
+
+/* ══ 中英双语（M5.9）══
+ * 机制：扁平词表（中文字符串 → 英文），调用点用 tr() 包一层；
+ * 词表缺的键自动回退中文 —— 新增控件只需在 SPEC 写中文，英文慢慢补。
+ * 提示（hint）按参数键单独映射（EN.hint），很长所以单独一张表。
+ * 语言选择存 localStorage("pa_lang")，切换由 masthead 的 btnLang 触发。 */
+let LANG = (() => { try { return localStorage.getItem("pa_lang") || "zh"; } catch (e) { return "zh"; } })();
+const EN = {
+  "调参台": "Tuning Bench", "素材": "Asset", "更换": "Swap",
+  "上传图片…": "Upload image…", "渲染预览": "Render preview", "复位": "Reset",
+  "存参数": "Save", "取参数": "Load", "全量出图": "Export final",
+  "播放": "Play", "暂停": "Pause",
+  "后端：检测中…": "Backend: detecting…", "后端：GPU ✓": "Backend: GPU ✓",
+  "后端：GPU": "Backend: GPU", "后端：服务端": "Backend: server",
+  "后端：初始化…": "Backend: init…",
+  "适应": "Fit", "帧": "Frame",
+  "光源 自动": "Light auto", "光源 手动": "Light manual", "副光源": "Light B",
+  "光源": "Light",
+  "调试图": "Debug views", "深度图（暗=近 蓝=远）": "Depth (dark=near blue=far)",
+  "等亮线（蓝90 橙95 红99 分位）": "Iso-luma (blue90 orange95 red99)",
+  "体积光形状（归一化）": "Volumetric shape (normalized)",
+  "网格与质量": "Grid & quality", "预处理": "Preprocess", "天空替换": "Sky replace",
+  "雾（空气透视）": "Fog (aerial perspective)", "体积光与辉光": "Volumetric & bloom",
+  "像素尾巴": "Pixel tail", "动画幅度": "Animation", "输出": "Output",
+  "网格长边": "Grid long edge", "工作分辨率": "Work resolution", "画面比例": "Aspect",
+  "保持原比例": "Keep native",
+  "自动色阶": "Auto levels", "锐化 USM": "Unsharp mask", "边缘保留": "Edge keep",
+  "细节预算": "Detail budget",
+  "天空替换": "Sky replace", "天空预设": "Sky preset", "星密度": "Star density",
+  "夜空 + 星场": "Night + stars", "暮色 + 稀星": "Dusk + few stars", "白昼": "Day",
+  "雾浓度": "Fog density", "距离幂次": "Distance power", "雾色": "Fog color",
+  "雾的上色": "Fog tint strength", "雾色饱和度上限": "Fog sat cap",
+  "体积光强度": "Volumetric strength", "散射色饱和度上限": "Scatter sat cap",
+  "光源影响范围收敛": "Light falloff", "光锥张角": "Cone angle",
+  "光柱强度": "Shaft strength", "光锥方向": "Cone direction",
+  "锥顶点X": "Cone apex X", "锥顶点Y": "Cone apex Y",
+  "副光源": "Light B", "副光X": "Light B X", "副光Y": "Light B Y",
+  "副光强度": "Light B strength", "副光范围": "Light B falloff",
+  "光锥长度": "Cone reach", "锥内增益": "In-cone gain", "光源位置": "Light position",
+  "散射色": "Scatter color", "辉光": "Bloom",
+  "色板颜色数": "Palette colors", "抖动强度": "Dither strength",
+  "边缘压暗": "Edge darken", "边缘增益": "Edge gain",
+  "雾漂移": "Fog drift", "光源闪烁": "Flicker", "视差推拉": "Parallax",
+  "尘埃数量": "Dust count", "尘埃亮度": "Dust brightness",
+  "尘埃闪烁": "Dust twinkle", "远处尘埃减弱": "Far dust fade",
+  "光源附近增亮": "Near-light boost",
+  "时长（秒）": "Duration (s)", "成片帧率": "FPS",
+  "参数扫描 · 同一画面并排对比多个取值": "Sweep · compare values side by side",
+  "出图完成": "Export finished", "，已开始下载": " - download started",
+  "渲染预览": "Render preview",
+  "说明": "Notes", "动画幅度分布": "Animation amplitude spread",
+  "循环闭合 frame(0)==frame(N)": "Loop closure frame(0)==frame(N)",
+  "逐位相同": "bit-identical", "显示倍率": "Display scale",
+  "光源位置(用到的)": "Light position (used)",
+};
+function tr(s){
+  return (LANG === "en" && s && Object.prototype.hasOwnProperty.call(EN, s)) ? EN[s] : s;
+}
+EN.hint = {
+  grid_long: "Pixel grid long edge. 240 = heavy retro, 480 = balanced. Lower grids lose thin details — pair with the detail budget.",
+  work_long: "Internal working resolution (grid x integer). Only affects quality of pre-quantize stages.",
+  levels: "Auto levels for flat/low-contrast sources. Pulls the histogram out to fill the range; skips images that already span it.",
+  sharpen: "Unsharp mask before quantization so blocks read crisp. >0.8 may ring.",
+  var_gain: "Edge-aware downsample weight. Higher keeps edges but can surface noise.",
+  detail: "Detail budget for low grids: busy cells keep their most outstanding pixel (thin lines, eyes) instead of the cell average. Flat areas unaffected. 0 = off. Biggest win at 240 grid.",
+  sky_on: "When the frame really has a sky (depth >= 0.985 plateau and >= 2% coverage), replace it with a procedural gradient + star field. Interiors never trigger. Applied at scene build: CPU and GPU stay identical.",
+  sky_mode: "Night: deep blue bands + dense stars. Dusk: purple-orange bands + sparse stars. Day: pale blue, no stars.",
+  sky_stars: "Star density multiplier. 0 = none; night/dusk only.",
+  density: "Fog density. Narrow usable range — 0.5~0.8 is sane, beyond ~1.4 it swallows the frame.",
+  power: "Distance falloff power. ~3 keeps fog in the far field; 1 fogs the midground.",
+  fog_tint: "How strongly fog pulls the whole frame toward its color. 0 = neutral gray fog (keeps original hues), 1 = full tint.",
+  fog_sat: "Saturation cap for the auto fog color. 0.40 default: only over-saturated fog colors get tamed.",
+  rays: "Volumetric light strength — how much scattered light is injected.",
+  rays_sat: "Saturation cap for the auto scatter color sampled at the light.",
+  rays_spread: "How tightly the light sticks to its source. 0 = uniform overlay (old filter feel), higher = tighter falloff.",
+  rays_cone: "Cone angle. 0 = off (radial halo); >0 shapes the light into a cone with hard edges.",
+  rays_shaft: "Independent additive shaft layer - the part that makes god rays visible. 0.5~1.0 to start; 0 = off.",
+  rays_dir: "Cone axis direction in degrees. Screen y points down: 90 = downward, 0 = rightward, -90 = upward.",
+  cone_x: "Cone apex X. -1 = follow the light source (default); >= 0 places the apex independently, even off-frame (sun outside the window).",
+  cone_y: "Same, vertical. Pair with the volumetric debug view: green cross = light, orange cross = apex.",
+  light2_on: "Second light source. Its scatter color is auto-sampled from its own neighborhood; lights add linearly (physically correct), each with its own occlusion and shadow.",
+  light2_x: "Light B position, horizontal.",
+  light2_y: "Light B position, vertical.",
+  light2_gain: "Light B volumetric strength. Watch total injection when both lights are on.",
+  light2_spread: "Light B falloff. 0 = uniform overlay, higher = tighter.",
+  rays_reach: "Cone length. 1 = barely attenuates; small values fade the beam within the frame.",
+  rays_cone_gain: "In-cone brightness gain. Shaping only - visibility comes from the shaft.",
+  colors: "Palette size for quantization. 32 = classic; higher keeps more hues (better fidelity, less retro).",
+  dither: "Bayer dither strength between palette entries. 0 = hard bands.",
+  edge_strength: "Edge darkening amount, computed from the pre-dither content.",
+  edge_gain: "Edge darkening gain. 2.0 calibrated; 7.0 drifts dense scenes.",
+  fog_drift: "Fog noise drift amplitude. 0 = static.",
+  flicker: "Light flicker depth. Integer-frequency sines, loop-safe.",
+  parallax: "Layered parallax push-pull amplitude. 0 = off.",
+  dust_count: "Floating dust particle count. Each particle is one thread.",
+  dust_bright: "Dust brightness.",
+  dust_twinkle: "Per-particle twinkle depth.",
+  dust_fade_far: "Far dust fades out (depth-aware).",
+  dust_light_boost: "Extra brightness for dust near the light source.",
+  seconds: "Loop duration in seconds. Frame count = duration x fps.",
+  fps: "Final render frame rate. Preview always keeps duration and lowers fps instead.",
+};
+function trHint(k, zh){
+  return (LANG === "en" && EN.hint && EN.hint[k]) ? EN.hint[k] : zh;
+}
+
+/* ── 小工具 ── */
+function fmt(v){
+  if (typeof v !== "number") return String(v);
+  return Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+}
+function toast(msg, kind){
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast on" + (kind ? " " + kind : "");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.className = "toast" + (kind ? " " + kind : ""), 4200);
+}
+let _badgeTimer = 0;
+function busyBadge(msg){
+  const b = $("badge");
+  clearInterval(_badgeTimer); _badgeTimer = 0;   // 任何 busyBadge 调用都停掉计时
+  if (!msg){ b.classList.remove("on"); return; }
+  b.textContent = msg; b.classList.add("on", "busy");
+}
+/* ⚠️ 长任务（换素材的深度推理、场景重建）可能要几十秒。
+ *    只给一句静态文案的话，用户看到的就是"死了" —— 实测症状：
+ *    「又卡黑屏了，但是现在莫名其妙好了」。
+ *    加上「已等 Ns」之后，"在等一个慢东西"和"卡死了"是两种完全不同的体验。 */
+function busyBadgeTimed(msg){
+  busyBadge(msg);
+  const b = $("badge");
+  const t0 = Date.now();
+  _badgeTimer = setInterval(() => {
+    const sec = Math.round((Date.now() - t0) / 1000);
+    if (sec > 0) b.textContent = msg.replace(/…\s*$/, "") + " · 已等 " + sec + " 秒…";
+  }, 1000);
+}
+function hsl2hex(v){ return "#" + v.map(x => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0")).join(""); }
+function hex2rgb(h){
+  h = h.replace("#", "");
+  return [0,2,4].map(i => parseInt(h.slice(i, i+2), 16) / 255);
+}
+function qs(extra){
+  const o = Object.assign({}, P, extra || {});
+  const parts = [];
+  for (const k of Object.keys(o)){
+    let v = o[k];
+    if (typeof v === "boolean") v = v ? 1 : 0;
+    if (typeof v === "number") v = Number(v.toFixed(6));
+    parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(v));
+  }
+  parts.push("asset=" + encodeURIComponent($("asset").value));
+  return parts.join("&");
+}
+
+/* ── 生成控件 ── */
+function buildRail(){
+  const rail = $("rail");
+  rail.innerHTML = "";
+  let idx = 0;
+  for (const grp of SPEC){
+    const d = document.createElement("details");
+    d.className = "grp stagger";
+    d.style.animationDelay = (idx++ * 34) + "ms";
+    if (grp.open) d.open = true;
+    d.innerHTML = `<summary>${tr(grp.g)}</summary>`;
+    const body = document.createElement("div");
+    body.className = "body";
+
+    for (const r of grp.rows){
+      if (r.type === "select"){
+        const w = document.createElement("div");
+        w.className = "row";
+        w.innerHTML = `<div class="lab"><span>${tr(r.t)}</span></div>`;
+        const sel = document.createElement("select");
+        sel.className = "mini";
+        for (const [v, lab] of r.opts){
+          const o = document.createElement("option");
+          o.value = v; o.textContent = tr(lab);
+          sel.appendChild(o);
+        }
+        sel.value = String(P[r.k]);
+        sel.onchange = () => { P[r.k] = sel.value; onParamChange(r, true, r.k); };
+        w.appendChild(sel);
+        if (r.hint) w.insertAdjacentHTML("beforeend", `<div class="hint">${trHint(r.k, r.hint)}</div>`);
+        body.appendChild(w);
+      }
+      else if (r.type === "color"){
+        const w = document.createElement("div");
+        w.className = "row";
+        const [cr, cg, cb] = r._c;
+        w.innerHTML = `<div class="lab"><span>${tr(r.t)}</span>
+            <label class="sw" style="padding:0"><input type="checkbox" ${r.auto(P) ? "checked" : ""}><i></i>
+            <span style="font-size:10.5px">${tr("自动")}</span></label></div>`;
+        const cb2 = document.createElement("label");
+        cb2.className = "colorrow" + (r.auto(P) ? " auto" : "");
+        const inp = document.createElement("input");
+        inp.type = "color";
+        inp.value = hsl2hex([P[cr] < 0 ? .5 : P[cr], P[cg] < 0 ? .5 : P[cg], P[cb] < 0 ? .5 : P[cb]]);
+        const hx = document.createElement("span");
+        hx.className = "chex";
+        hx.textContent = r.auto(P) ? tr("自动估计") : inp.value;
+        inp.oninput = () => {
+          const rgb = hex2rgb(inp.value);
+          P[cr] = rgb[0]; P[cg] = rgb[1]; P[cb] = rgb[2];
+          hx.textContent = inp.value;
+          onParamChange(r, false, cr);        // 传真实字段名（fog_r / rays_r）
+        };
+        inp.onchange = () => onParamChange(r, true, cr);
+        cb2.appendChild(inp); cb2.appendChild(hx);
+        const sw = w.querySelector("input[type=checkbox]");
+        sw.onchange = () => {
+          const on = sw.checked;
+          if (on){ P[cr] = P[cg] = P[cb] = -1; }
+          else { const rgb = hex2rgb(inp.value); P[cr] = rgb[0]; P[cg] = rgb[1]; P[cb] = rgb[2]; }
+          hx.textContent = on ? "自动估计" : inp.value;
+          cb2.classList.toggle("auto", on);
+          onParamChange(r, true, cr);
+        };
+        w.appendChild(cb2);
+        if (r.hint) w.insertAdjacentHTML("beforeend", `<div class="hint">${trHint(r.k, r.hint)}</div>`);
+        body.appendChild(w);
+      }
+      else if (r.type === "vec2"){
+        const w = document.createElement("div");
+        w.className = "row";
+        const [cx, cy] = r._c;
+        w.innerHTML = `<div class="lab"><span>${tr(r.t)}</span>
+            <label class="sw" style="padding:0"><input type="checkbox" ${r.auto(P) ? "checked" : ""}><i></i>
+            <span style="font-size:10.5px">${tr("自动")}</span></label></div>`;
+        const wrap = document.createElement("div");
+        wrap.className = "grid2";
+        for (const [key, lab] of [[cx, "X"], [cy, "Y"]]){
+          const cell = document.createElement("div");
+          cell.innerHTML = `<div class="lab"><span style="font-size:11px">${lab}</span>
+              <span class="val">${fmt(P[key])}</span></div>`;
+          const inp = document.createElement("input");
+          inp.type = "range"; inp.min = 0; inp.max = 1; inp.step = .005; inp.value = P[key];
+          // ⚠️ 把**真实字段名**（rays_x / rays_y）传出去。
+          //    这个控件包了两个字段，row.k 是占位名 "_light" ——
+          //    下游若拿 row.k 去比对 "rays_x" 就永远不匹配（标记不动的根因）。
+          inp.oninput = () => {
+            P[key] = +inp.value;
+            cell.querySelector(".val").textContent = fmt(P[key]);
+            // 光源标记必须**立刻**跟随，不等渲染回来
+            if (key === cx || key === cy) updateMarker();
+            onParamChange(r, false, key);
+          };
+          inp.onchange = () => onParamChange(r, true, key);
+          cell.appendChild(inp);
+          wrap.appendChild(cell);
+        }
+        w.appendChild(wrap);
+        const sw = w.querySelector("input[type=checkbox]");
+        sw.onchange = () => { P[r._auto] = sw.checked; wrap.style.opacity = sw.checked ? .4 : 1;
+                              wrap.style.pointerEvents = sw.checked ? "none" : "auto";
+                              onParamChange(r, true, r._auto); };
+        wrap.style.opacity = r.auto(P) ? .4 : 1;
+        wrap.style.pointerEvents = r.auto(P) ? "none" : "auto";
+        if (r.hint) w.insertAdjacentHTML("beforeend", `<div class="hint">${trHint(r.k, r.hint)}</div>`);
+        body.appendChild(w);
+      }
+      else if (r.type === "bool"){
+        const w = document.createElement("div");
+        w.className = "row";
+        w.innerHTML = `<div class="lab"><span>${tr(r.t)}</span></div>`;
+        const sw = document.createElement("label");
+        sw.className = "sw";
+        sw.innerHTML = `<input type="checkbox" ${P[r.k] ? "checked" : ""}><i></i>`;
+        sw.querySelector("input").onchange = (e) => {
+          P[r.k] = e.target.checked;
+          onParamChange(r, true, r.k);
+        };
+        w.appendChild(sw);
+        if (r.hint) w.insertAdjacentHTML("beforeend", `<div class="hint">${trHint(r.k, r.hint)}</div>`);
+        body.appendChild(w);
+      }
+      else {
+        const w = document.createElement("div");
+        w.className = "row";
+        w.innerHTML = `<div class="lab"><span>${tr(r.t)}</span><span class="val">${fmt(P[r.k])}</span></div>`;
+        const inp = document.createElement("input");
+        inp.type = "range";
+        inp.min = r.min; inp.max = r.max; inp.step = r.step; inp.value = P[r.k];
+        const val = w.querySelector(".val");
+        inp.oninput = () => { P[r.k] = +inp.value; val.textContent = fmt(P[r.k]); onParamChange(r, false, r.k); };
+        inp.onchange = () => onParamChange(r, true, r.k);
+        w.appendChild(inp);
+        const cls = (r.hint && (r.hint.includes("⚠️") || r.hint.includes("区间很窄"))) ? "hint warn" : "hint";
+        if (r.hint) w.insertAdjacentHTML("beforeend", `<div class="${cls}">${trHint(r.k, r.hint)}</div>`);
+        body.appendChild(w);
+      }
+    }
+    d.appendChild(body);
+    rail.appendChild(d);
+  }
+}
+
+/* ── 参数变化：拖动**和松手都只渲首帧**；整段由「渲染预览」/「播放」显式触发 ──
+
+   ⚠️ 这里的节流是"必跑的、只保留最新值"，不是"限流后丢弃"。
+
+   第一版写成 `if (stillTimer) return;` —— 意思是"上一次还没跑完就丢弃新事件"。
+   后果：连续拖动时，事件被成片地丢掉，而且**松手前最后那一次也可能被丢**，
+   于是画面停在某个中间值上，用户以为滑杆坏了。
+   实测拖动刷新率只有约 8~15 fps（渲染 45ms + 往返 67ms 是硬成本）。
+
+   正确做法：用一个 `pending` 标记。
+   - 正在渲染 → 只把最新值记下来，不排队
+   - 渲染结束 → 若期间有更新，立刻用**最新值**再渲一次
+   这样无论如何，**最终显示的一定是松手时的值**。
+
+   ⭐ 另外（用户建议，实测支持）：**松手也只重渲首帧，不渲整段。**
+   整段 60 帧要 6.3 秒（服务端渲 60 帧算统计 3.2s + 逐帧取图 3.1s），
+   而调参时人只关心"改了这个参数画面变成什么样" —— 首帧足够。
+   整段只在**点播放**时才渲，那代价才值得。
+   实测单帧往返 40~70ms，比整段快约 100 倍。 */
+let stillBusy = false, stillPending = false, stillAbort = 0;
+
+function onParamChange(row, released, changedKey){
+  // 实际变化的字段：vec2/color 这类复合控件的 row.k 是占位名（如 "_light"），
+  // 真正的字段要由子控件传进来 —— 之前这里拿 row.k 去比对 "rays_x"，
+  // **永远不匹配**，于是拖 XY 时标记不动（用户报障）。
+  const key = changedKey || row.k;
+  invalidateFrames();
+  scheduleDebug();
+  // GPU 后端：色板/核/粒子参数变了 → debounce 后向服务端要一次新素材；
+  // 同时立刻重渲单帧（不等素材回来，用旧色板先看着）
+  if (backendActive()){
+    if (SCENE_KEYS.includes(key)) gpuSceneKey = "";
+    gpuScheduleAssets();
+    scheduleGpuStill();
+  }
+  if (SCENE_KEYS.includes(key)){ sceneStale = true; sceneStaleMark(); }
+  // 光源位置变化时标记要**立刻**跟着动（不等渲染回来，否则就是"跳变"）
+  if (key === "rays_x" || key === "rays_y" || key === "rays_auto_center") updateMarker();
+  if (key === "light2_x" || key === "light2_y" || key === "light2_on") updateMarker2();
+  // 改了网格/预处理 → 逻辑尺寸会变，先问一次好把取景框尺寸定准
+  if (SCENE_KEYS.includes(key) && released) refreshMeta();
+  // ⭐ 视差推拉在 t=0 处位移**恰好为零**（循环闭合的要求）——
+  //    预览默认停在 t=0，所以"拖完滑杆看首帧"必然看不出任何变化
+  //    （用户实测反馈："我肉眼看不出来"）。
+  //    打开视差时自动跳到 1/4 周期（位移接近峰值），并说明原因。
+  if (key === "parallax" && released){
+    const amp = parseFloat(P.parallax) || 0;
+    if (amp > 0 && cur === 0 && frameCount > 4){
+      cur = Math.round(frameCount * 0.25);
+      $("scrub").value = cur;
+      $("scrubT").textContent = "t = 0.25";
+      toast("视差在 t=0 位移为零（循环闭合要求）—— 已跳到 1/4 周期；点播放看完整推拉", "ok");
+    }
+  }
+  if (released){
+    // ⭐ 松手也**只渲首帧** —— 整段留给「渲染预览」/「播放」（见上面注释）
+    if (frames.length) renderStillOnly();
+    else renderPreview();
+  } else {
+    scheduleStill();
+  }
+}
+function scheduleStill(){
+  if (stillBusy){ stillPending = true; return; }   // 记住"有新值"，不丢弃
+  stillBusy = true;
+  const mine = ++stillAbort;
+  requestAnimationFrame(async () => {
+    try { await renderStillOnly(); } finally { stillBusy = false; }
+    if (stillPending){ stillPending = false; scheduleStill(); }
+  });
+}
+/* 参数一变，已渲好的整段帧就不再对应当前参数 —— 必须显式失效。 */
+/* GPU 模式下拖动滑杆：立刻重渲一帧（本地渲染，没有往返，不需要节流） */
+let gpuStillTimer = 0;
+function scheduleGpuStill(){
+  clearTimeout(gpuStillTimer);
+  gpuStillTimer = setTimeout(() => {
+    if (!gpuCanRender() || !gpuRenderer || !gpuRenderer.scene) return;
+    gpuRenderer.render(P, cur / Math.max(1, frameCount || 1));
+    updateMarker();
+  }, 16);
+}
+/* frames 失效但不改按钮文案 —— GPU 模式下本来就不靠 frames */
+function invalidateFrames0(){
+  framesValid = false;
+}
+
+function invalidateFrames(){
+  // ⚠️ GPU 后端**没有"整段"可失效** —— 每一帧都是按需现渲的，
+  //    改参数只影响之后的帧。如果把 framesValid 打成 false：
+  //    · 按钮变成「播放 ⟳」（暗示要重渲整段 —— GPU 模式这是谎言）
+  //    · play() 开头 `if (!framesValid) return` → **点播放静默不响**
+  //      （用户实测：改完参数播放就坏了，按钮还带个圆圈箭头）
+  if (gpuCanRender()) return;
+  if (!framesValid) return;
+  framesValid = false;
+  $("btnPlay").textContent = "播放 ⟳";       // ⟳ = 需要重渲整段
+  $("btnPlay").title = "参数已改，点播放会先重渲整段";
+}
+function sceneStaleMark(){
+  const b = $("badge");
+  b.textContent = "场景已变更 · 松手后重建";
+  b.classList.add("on", "busy");
+}
+
+async function renderStillOnly(iArg){
+  const i = (iArg === undefined) ? cur : iArg;
+  // ⭐ GPU 后端：直接在浏览器里渲这一帧，**没有任何网络往返**。
+  //    这正是移植的收益所在（服务端路径要 渲染 + PNG 编码 + HTTP ≈ 67ms）。
+  if (gpuCanRender()){
+    try{
+      await gpuEnsureScene(false);
+      const tt = i / Math.max(1, frameCount || 1);
+      gpuRenderer.render(P, tt);
+      gpuSyncCanvas();
+      $("plate").textContent = `${tr("帧")} ${i} / ${Math.max(0, frameCount - 1)}`;
+      $("scrubT").textContent = "t = " + tt.toFixed(2);
+      updateMarker();
+      return;
+    } catch (e){
+      // 出问题就退回服务端，不要让画面停住
+      console.warn("[webgpu] 单帧失败，回退：", e);
+      gpuReady = false; gpuRenderer = null;
+      $("stagebox").classList.remove("gpu");
+      gpuBtn("bad", "后端：服务端", "WebGPU 失败已回退：" + e.message);
+    }
+  }
+  // ⚠️ 用**当前 zoom 档**而不是"拖动时减半"。
+  //    减半的图在固定尺寸的框里不会被放大，只会显得更糊 ——
+  //    而且它正是"画面尺寸跳变"的根因。渲染本身只要 ~50ms，省它没有意义。
+  const url = "/api/still?" + qs({ t: (i / Math.max(1, frameCount || 1)).toFixed(4), scale: zoom });
+  await swapFrame(url);
+}
+function swapFrame(url){
+  return new Promise((res) => {
+    const el = $("frame");
+    if (imgCache.has(url)){ el.src = url; updateMarker(); return res(); }
+    const tmp = new Image();
+    tmp.onload = () => { imgCache.set(url, 1); el.src = url; updateMarker(); res(); };
+    tmp.onerror = () => res();
+    tmp.src = url;
+  });
+}
+
+/* ⭐ 记录**当前**的收尾状态。
+ * ⚠️ 必须在**每个会改变这些状态的时点**都调一次：
+ *    renderDone（首帧收尾）之外，后台整段就绪/失败时也要再记 ——
+ *    否则体检读到的是首帧时刻的旧快照（「播放」那时**应该**是禁用的），
+ *    于是得到一个**稳定复现的假问题**（实测就是这么报出来的）。
+ *    另外首帧那次 psPaintCheck 是渲染进行中拍的快照，那时按钮本来就
+ *    该禁用 —— 拿它断言"按钮不该禁用"必然出错。 */
+function recordFinal(){
+  PAGE_STATE.final = {
+    backend: backendName(), busy: busy,
+    preview_disabled: $("btnPreview").disabled,
+    play_disabled: $("btnPlay").disabled,
+    badge_on: $("badge").classList.contains("on"),
+    frames_valid: framesValid, n_frames: frameCount
+  };
+  psFlush();
+}
+
+/* 渲染收尾 —— **唯一的** busy 复位点。
+ * 若期间有人叫过渲染（`renderPending`），立刻补跑一次。 */
+function renderDone(){
+  busy = false;
+  $("btnPreview").disabled = false;
+  recordFinal();
+  if (renderPending){
+    renderPending = false;
+    ps("renderPreview:补跑待办");
+    renderPreview();
+  } else {
+    ps("renderPreview:done", { backend: backendName() });
+  }
+}
+
+/* ⭐ 首帧"真的有内容吗" —— 直接把打包缓冲读回来算统计，并记下画布的可见性。
+ *
+ * ⚠️ 这条是必需的：这一轮所有 bug 的**共同症状都是"全黑"**，而"全黑"从界面上
+ *    分不出是"渲染了一帧黑"还是"压根没渲染"。只有把像素读回来才能分辨。
+ *    （另外记录可见性：曾经出过"渲染对了但显示的是另一个元素"。）
+ */
+async function psPaintCheck(tag){
+  const info = { tag };
+  try{
+    const c = $("gpuCanvas"), box = $("stagebox");
+    const cs = getComputedStyle(c);
+    info.canvas_buf = [c.width, c.height];
+    info.canvas_css = [cs.width, cs.height];
+    info.canvas_display = cs.display;
+    info.img_display = getComputedStyle($("frame")).display;
+    info.stagebox_gpu = box.classList.contains("gpu");
+    info.btns = { preview: $("btnPreview").disabled, play: $("btnPlay").disabled };
+    info.badge = ($("badge").className || "") + "|" + ($("badge").textContent || "").slice(0, 40);
+    info.busy = busy;
+
+    const r = gpuRenderer;
+    if (!r || !r.scene){ info.err = "没有场景"; PAGE_STATE.canvas = info; psFlush(); return; }
+    if (r.canvas.width !== r.scene.W) info.warn_resize = "画布后备缓冲与网格不一致";
+    const bytes = r.scene.npix * 4;
+    const rb = r.dev.createBuffer({ size: bytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = r.dev.createCommandEncoder();
+    enc.copyBufferToBuffer(r.buf.packed, 0, rb, 0, bytes);
+    r.dev.queue.submit([enc.finish()]);
+    await r.dev.queue.onSubmittedWorkDone();
+    await rb.mapAsync(GPUMapMode.READ);
+    const a = new Uint32Array(rb.getMappedRange().slice(0));
+    rb.unmap(); rb.destroy();
+    let mn = 255, mx = 0, sum = 0, dark = 0;
+    for (let i = 0; i < a.length; i++){
+      const px = a[i];
+      if ((px & 0xFFFFFF) === 0) dark++;               // 打包低位是 R，全 0 就是黑
+      const v = ((px & 0xFF) + ((px >> 8) & 0xFF) + ((px >> 16) & 0xFF)) / 3;
+      if (v < mn) mn = v; if (v > mx) mx = v; sum += v;
+    }
+    info.px = a.length;
+    info.dark_pct = +(100 * dark / a.length).toFixed(2);
+    info.min = +mn.toFixed(1); info.max = +mx.toFixed(1);
+    info.mean = +(sum / a.length).toFixed(2);
+    // 唯一色数：像素画的"全黑"是不是真的只有一种颜色，这一条最能说明问题
+    info.uniq = new Set(Array.from(a.slice(0, Math.min(a.length, 40000)))).size;
+  } catch (e){
+    info.err = (e && e.message) || String(e);
+  }
+  PAGE_STATE.canvas = info;
+  psFlush();
+}
+
+/* 服务端路径的"真的画出来了吗" —— 把 `<img>` 画进离屏 canvas 采样。
+ *
+ * ⚠️ GPU 路径能直接读回缓冲，服务端路径只有一个 `<img>` 的 URL。
+ *    但"用户看到的是不是黑的"这个问题对**两条路都要能回答** ——
+ *    否则回退路径出问题（没有 WebGPU 的用户）我们一样只能靠截图猜。
+ *    同源图片可以 drawImage + getImageData，正好够用。
+ */
+async function psPaintCheckImg(tag){
+  const info = { tag, backend: backendName() };
+  try{
+    const im = $("frame");
+    info.img_src = (im.getAttribute("src") || "").slice(-48);
+    info.img_complete = im.complete;
+    info.img_natural = [im.naturalWidth, im.naturalHeight];
+    info.img_display = getComputedStyle(im).display;
+    info.img_css = [getComputedStyle(im).width, getComputedStyle(im).height];
+    info.canvas_display = getComputedStyle($("gpuCanvas")).display;
+    info.busy = busy;
+    info.badge = ($("badge").className || "") + "|" + ($("badge").textContent || "").slice(0, 40);
+    if (!im.complete || !im.naturalWidth){ info.err = "图片没加载完"; }
+    else {
+      const c = document.createElement("canvas");
+      c.width = im.naturalWidth; c.height = im.naturalHeight;
+      const g = c.getContext("2d", { willReadFrequently: true });
+      g.drawImage(im, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let mn = 255, mx = 0, sum = 0, dark = 0;
+      const uniq = new Set();
+      const stride = Math.max(1, Math.floor((d.length / 4) / 20000));
+      let cnt = 0;
+      for (let i = 0; i < d.length; i += 4 * stride){
+        const v = (d[i] + d[i+1] + d[i+2]) / 3;
+        if (v < mn) mn = v; if (v > mx) mx = v; sum += v;
+        if (d[i] === 0 && d[i+1] === 0 && d[i+2] === 0) dark++;
+        uniq.add((d[i] << 16) | (d[i+1] << 8) | d[i+2]);
+        cnt++;
+      }
+      info.px = cnt;
+      info.dark_pct = +(100 * dark / cnt).toFixed(2);
+      info.min = +mn.toFixed(1); info.max = +mx.toFixed(1);
+      info.mean = +(sum / cnt).toFixed(2);
+      info.uniq = uniq.size;
+    }
+  } catch (e){
+    info.err = (e && e.message) || String(e);
+  }
+  PAGE_STATE.canvas = info;
+  psFlush();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 交互探针（`?probe=ui`）
+ *
+ * 为什么需要：启动体检只证明「首帧能出来」；用户实际抱怨的是
+ * **交互**（播放不动、滑杆没反应、切图卡住、标记消失）。
+ * 这些只有真的去做一遍才知道 —— 所以这个探针把用户会做的每个交互
+ * **程序化地做一遍**，判据全部用**读回像素**（画面到底变没变），
+ * 不用"看起来对"。
+ *
+ * 结果 POST 回服务端（固定名 `_ui_probe`），tools/browser_ui_probe.py
+ * 无人值守地驱动并断言。
+ * ══════════════════════════════════════════════════════════════════ */
+/* 当前帧的原始像素（GPU=packed 缓冲，服务端=解码 img）。供探针算逐像素差异。 */
+async function probeFramePixels(){
+  if (backendActive()){
+    const r = gpuRenderer;
+    const bytes = r.scene.npix * 4;
+    const rb = r.dev.createBuffer({ size: bytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = r.dev.createCommandEncoder();
+    enc.copyBufferToBuffer(r.buf.packed, 0, rb, 0, bytes);
+    r.dev.queue.submit([enc.finish()]);
+    await r.dev.queue.onSubmittedWorkDone();
+    await rb.mapAsync(GPUMapMode.READ);
+    const a = new Uint32Array(rb.getMappedRange().slice(0));
+    rb.unmap(); rb.destroy();
+    return a;
+  }
+  const im = $("frame");
+  const c = document.createElement("canvas");
+  c.width = im.naturalWidth; c.height = im.naturalHeight;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(im, 0, 0);
+  return new Uint32Array(g.getImageData(0, 0, c.width, c.height).data.buffer);
+}
+
+/* 两帧的逐像素差异统计（max 通道差）。 */
+function pixelDiffStats(a, b){
+  const n = Math.min(a.length, b.length);
+  let mx = 0, cnt = 0;
+  for (let i = 0; i < n; i++){
+    const pa = a[i], pb = b[i];
+    const d = Math.max(Math.abs((pa & 255) - (pb & 255)),
+                       Math.abs(((pa >> 8) & 255) - ((pb >> 8) & 255)),
+                       Math.abs(((pa >> 16) & 255) - ((pb >> 16) & 255)));
+    if (d > mx) mx = d;
+    if (d > 8) cnt++;
+  }
+  return { max: mx, strong_pct: +(100 * cnt / n).toFixed(2) };
+}
+
+async function probeSig(){
+  /* 当前画面的签名（和 + 非零像素数）。两条后端各有一条读法。 */
+  if (backendActive()){
+    const r = gpuRenderer;
+    if (!r || !r.scene) return { err: "no scene" };
+    const bytes = r.scene.npix * 4;
+    const rb = r.dev.createBuffer({ size: bytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = r.dev.createCommandEncoder();
+    enc.copyBufferToBuffer(r.buf.packed, 0, rb, 0, bytes);
+    r.dev.queue.submit([enc.finish()]);
+    await r.dev.queue.onSubmittedWorkDone();
+    await rb.mapAsync(GPUMapMode.READ);
+    const a = new Uint32Array(rb.getMappedRange().slice(0));
+    rb.unmap(); rb.destroy();
+    let sum = 0, nz = 0;
+    for (let i = 0; i < a.length; i++){
+      const px = a[i] & 0xFFFFFF;
+      sum = (sum + (px & 0xFF) + ((px >> 8) & 0xFF) + ((px >> 16) & 0xFF)) >>> 0;
+      if (px) nz++;
+    }
+    return { sum: sum, nz: nz };
+  }
+  const im = $("frame");
+  if (!im.complete || !im.naturalWidth) return { err: "img not ready" };
+  const c = document.createElement("canvas");
+  c.width = im.naturalWidth; c.height = im.naturalHeight;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(im, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let sum = 0, nz = 0;
+  for (let i = 0; i < d.length; i += 16){
+    sum = (sum + d[i] + d[i+1] + d[i+2]) >>> 0;
+    if (d[i] || d[i+1] || d[i+2]) nz++;
+  }
+  return { sum: sum, nz: nz };
+}
+
+async function runUiProbe(){
+  // ⚠️ rep 带 run token：驱动靠它认"这份报告是这一轮的"。
+  //    第一版没带，而 step() 在第一步就把半成品 rep 挂到了 PAGE_STATE 上，
+  //    驱动看到 uiProbe 非空就收工 —— 每次都只跑到第四步，白跑两轮。
+  const rep = { ok: false, steps: [], ts: Date.now(), run: PAGE_STATE.run };
+  const step = (name, d) => {
+    rep.steps.push(Object.assign({ name: name }, d || {}));
+    PAGE_STATE.uiProbe = rep; psFlush();
+  };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  try {
+    rep.backend = backendName();
+    step("开始", { backend: rep.backend, framesValid: framesValid, frameCount: frameCount });
+
+    const s0 = await probeSig();
+    step("初帧签名", s0);
+
+    /* ① 播放：走**按钮的完整处理**（含"整段过期先补渲"），采样两次看画面动不动 */
+    await onPlayClick();
+    await sleep(900);
+    const p1 = await probeSig();
+    await sleep(700);
+    const p2 = await probeSig();
+    step("播放", { moving: (p2.sum !== p1.sum),
+                   btn: $("btnPlay").textContent, playing: playing,
+                   err: p1.err || p2.err });
+    stopPlay();
+    await sleep(200);
+
+    /* ② 进度条：拖到 1/3 处，画面必须变 */
+    cur = Math.max(1, Math.floor(frameCount / 3));
+    await renderStillOnly(cur);
+    await sleep(200);
+    const s1 = await probeSig();
+    step("进度条", { changed: (s1.sum !== s0.sum) });
+
+    /* ③ 逐个滑杆：改一步 → 画面必须变。
+     *    SCENE_KEYS 要重建场景（秒级），只测 grid_long 一个代表；
+     *    其余每个都测。 */
+    const tried = [];
+    for (const grp of SPEC) for (const r of grp.rows){
+      const keys = r._c || [r.k];
+      const k = keys[0];
+      if (tried.indexOf(k) >= 0) continue;
+      if (typeof P[k] === "number" && !r.step) continue;
+      if (r.type === "select") continue;
+      if (SCENE_KEYS.includes(k) && k !== "grid_long") continue;
+      tried.push(k);
+      if (!(k in P)) { step("滑杆 " + k, { err: "P 里没有" }); continue; }
+      const v0 = P[k];
+      let nv;
+      if (typeof v0 === "number") nv = Math.min((r.max != null ? r.max : 99), v0 + (r.step || 0.1));
+      else if (typeof v0 === "boolean") nv = !v0;
+      else continue;
+      const sceneKey = SCENE_KEYS.includes(k);
+      P[k] = nv;
+      onParamChange(r, true, k);
+      await sleep(sceneKey ? 9000 : 500);
+      const sg = await probeSig();
+      step("滑杆 " + k, { changed: (sg.sum !== s0.sum || sg.sum !== sg.nz * 1e9) && sg.sum !== undefined ? sg.sum !== s0.sum : null,
+                           scene: sceneKey, err: sg.err });
+      P[k] = v0;
+      onParamChange(r, true, k);
+      await sleep(sceneKey ? 9000 : 350);
+    }
+
+    /* ③b 改参后点播放（用户报的 bug：改完参数播放静默不响，按钮带 ⟳）
+     *    上面的滑杆循环已经把参数改了一圈又复原 —— 正是出 bug 的状态。 */
+    await onPlayClick();
+    await sleep(900);
+    const q1 = await probeSig();
+    await sleep(700);
+    const q2 = await probeSig();
+    step("播放(改参后)", { moving: (q2.sum !== q1.sum),
+                           btn: $("btnPlay").textContent,
+                           err: q1.err || q2.err });
+    stopPlay();
+    await sleep(200);
+
+    /* ③c 循环闭合读数（用户报的 bug：拖完滑杆永远卡在「检测中…」）
+     *    素材类滑杆会触发 gpuScheduleAssets —— 旧版本在那里把 loop_ok
+     *    抹回 null 且不再自检。churn 之后读 verdict，必须有结论。 */
+    for (let i = 0; i < 20 && gpuSelfCheckBusy; i++) await sleep(250);
+    step("循环闭合读数", {
+      loop_ok: gpuPreviewStats ? gpuPreviewStats.loop_ok : "无统计",
+      loop_err: gpuPreviewStats ? (gpuPreviewStats.loop_err || null) : null
+    });
+
+    /* ③d 视差在 GPU 上必须真的生效（M5 移植验收）——
+     *    ⚠️ 判据两点：画面必须变（视差本身有效），且**仍然是 GPU 后端**
+     *    （没有悄悄回退到服务端 —— 那正是移植前的行为）。 */
+    {
+      const before = await probeSig();
+      P.parallax = 0.5;
+      onParamChange({ k: "parallax" }, true, "parallax");
+      await sleep(900);
+      const after = await probeSig();
+      step("视差(GPU)", {
+        changed: after.sum !== before.sum,
+        backend: backendName(),
+        same_as_server_fallback: false
+      });
+      P.parallax = 0;
+      onParamChange({ k: "parallax" }, true, "parallax");
+      await sleep(400);
+    }
+
+    /* ③e 光锥 + 光柱（M5.1/M5.2）：逐像素量化三态
+     *    关 → 开锥 → 开锥+光柱。
+     *    ⚠️ 判据必须**分级**：只开锥（塑形）本身很弱是实测结论（体积光层
+     *    只有 1~3/255），所以只要求"有变化"；**光柱**才是要求
+     *    "锥内强变化"的那一档。 */
+    {
+      const s0 = await probeFramePixels();
+      P.rays_cone = 0.75; P.rays_dir = 30;
+      onParamChange({ k: "rays_cone" }, true, "rays_cone");
+      await sleep(900);
+      const f1 = await probeFramePixels();
+      P.rays_shaft = 1.9;
+      onParamChange({ k: "rays_shaft" }, true, "rays_shaft");
+      await sleep(900);
+      const f2 = await probeFramePixels();
+
+      const d1 = pixelDiffStats(s0, f1);
+      const d2 = pixelDiffStats(f1, f2);
+      step("光锥+光柱", {
+        backend: backendName(), build: gpuBuild,
+        开锥: d1, 开光柱后: d2,
+        shaft: P.rays_shaft
+      });
+      P.rays_cone = 0; P.rays_dir = 80; P.rays_shaft = 0;
+      onParamChange({ k: "rays_cone" }, true, "rays_cone");
+      await sleep(400);
+    }
+
+    /* ④ 光源标记：勾上后标记必须可见、且落在取景框内 */
+    $("showMarker").checked = true;
+    updateMarker();
+    await sleep(120);
+    const mk = $("marker"), box = $("stagebox");
+    step("光源标记", {
+      visible: mk.classList.contains("on") && getComputedStyle(mk).display !== "none",
+      left: mk.style.left, top: mk.style.top,
+      boxW: box.offsetWidth, boxH: box.offsetHeight
+    });
+    $("showMarker").checked = false;
+    updateMarker();
+
+    /* ⑤ 切换素材：下一张，量"从发起到画面变化"的耗时 */
+    const sel = $("asset");
+    const idx = sel.selectedIndex;
+    const next = sel.options[(idx + 1) % sel.options.length].value;
+    const t0 = performance.now();
+    sel.value = next;
+    syncPicker(); sceneStale = true; refreshMeta(); renderPreview();
+    let switched = null;
+    for (let i = 0; i < 240; i++){
+      await sleep(500);
+      if (busy) continue;
+      const sg = await probeSig();
+      if (sg.sum !== undefined && sg.sum !== s0.sum){ switched = performance.now() - t0; break; }
+    }
+    step("切换素材", { to: next, ms: switched === null ? null : Math.round(switched) });
+
+    rep.ok = true;
+  } catch (e){
+    rep.err = (e && e.stack) || String(e);
+  }
+  PAGE_STATE.uiProbe = rep;
+  document.title = "UIPROBE:" + (rep.ok ? "OK" : "FAIL");
+  // ⚠️ 必须**直接 await POST**，不能靠 psFlush 的防抖 ——
+  //    驱动脚本看到 uiProbe 就会在 2 秒后关浏览器，防抖的 150ms
+  //    大多数时候赶不上，报告就丢了（实测丢过一次，白跑一轮）。
+  try{
+    await fetch("/api/params", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "_ui_probe", params: rep })
+    });
+  } catch (e2){ /* 服务端拿不到就算了 */ }
+  return rep;
+}
+
+/* ── 整段预览 ── */
+async function renderPreview(){
+  if (busy){
+    // ⚠️⚠️ **不能把后来者直接丢掉。**
+    //
+    //    原来这里是 `if (busy) return;` —— 于是任何在"渲染进行中"发起的请求
+    //    都被静默吞掉，调用方以为会渲、实际什么都没发生。
+    //    实测的用户可⻅症状：**打开页面后画面一直是黑的** ——
+    //    启动流程里 `init()` 早在 GPU 初始化之前就调了一次 renderPreview
+    //    （走服务端路径、耗时几十秒、占住 busy），
+    //    而后端初始化完成后那次 renderPreview 被这里吞掉 →
+    //    **GPU 画布永远没被画过一帧**，而界面已经切到 GPU 模式（显示画布）→ 全黑。
+    //
+    //    正确做法：记一个待办，当前这次收尾时补跑一次（合并成一次，不并发）。
+    renderPending = true;
+    ps("renderPreview:busy 中，已记待办");
+    return;
+  }
+  busy = true;
+  renderPending = false;
+  ps("renderPreview:enter", { backend: backendName(), stale: sceneStale });
+  $("btnPreview").disabled = true;
+  stopPlay();
+  // ⭐ GPU 后端：不需要"渲整段 + 逐帧取图"，只有一次场景包传输。
+  if (gpuCanRender()){
+    busyBadgeTimed("准备场景（首次要跑深度推理，可能要几十秒）…");
+    try{
+      await gpuEnsureScene(sceneStale);
+      sceneStale = false;
+      frameCount = Math.max(2, Math.round((+P.seconds || 6) * (+P.fps || 30)));
+      previewFps = +P.fps || 30;
+      invalidateFrames0();
+      framesValid = true;
+      $("scrub").max = Math.max(0, frameCount - 1);
+      cur = 0; $("scrub").value = 0;
+      gpuRenderer.render(P, 0);
+      gpuSyncCanvas();
+      await psPaintCheck("首帧");
+      $("badge").classList.remove("on");
+      $("btnPlay").disabled = false;
+      $("btnPlay").textContent = tr("播放");
+      $("btnPlay").title = "";
+      toast(`WebGPU 就绪 · 每帧在浏览器内渲染（${gpuInfo}）`, "ok");
+      busyBadge("");
+    } catch (e){
+      psErr("gpu-path", (e && e.stack) || e);
+      toast("WebGPU 准备失败，已切回服务端：" + e.message, "bad");
+      gpuReady = false; gpuRenderer = null;
+      renderPending = false;               // 回退就是重新渲一遍，别让待办叠一层
+      $("stagebox").classList.remove("gpu");
+      gpuBtn("bad", "后端：服务端", "WebGPU 失败已回退：" + e.message);
+      busy = false;
+      $("btnPreview").disabled = false;
+      return renderPreview();
+    } finally {
+      // ⚠️ 注意：catch 里已经手工复位并 return，走的是上面那条路；
+      //    正常完成时由这里收尾（并补跑待办）。
+      if (busy) renderDone();
+    }
+    return;
+  }
+  // ⭐⭐ **首帧优先**：先渲**一帧**让用户看到画面，整段在后台补。
+  //
+  //    以前的顺序是「渲完整段 60 帧 → 才显示第一帧」。实测耗时：
+  //    全新素材 = 深度 0.26s + 场景/色板 ~7s + 整段 60 帧 ~5s ≈ **14s 黑屏**；
+  //    热缓存也要 ~5s。用户看到的就是「切个图卡死半分钟」。
+  //    现在 2~8s 就有图可看、可调；「播放」在整段后台就绪后自动亮起。
+  //
+  //    ⚠️ 深度推理本身只要 0.26s（量过），**不值得上 GPU** —— 慢的是
+  //    场景重建与整段渲染的**编排**，这正是这里改的东西。
+  busyBadgeTimed(sceneStale ? "重建场景中（首次含深度与场景，可能要几十秒）…" : "出首帧…");
+  try{
+    const stillUrl = "/api/still?" + qs({ t: 0, scale: zoom });
+    await swapFrame(stillUrl);
+    await psPaintCheckImg("首帧");
+    if (zoomAuto) zoom = fitZoom();
+    applyZoom();
+    sceneStale = false;
+    busyBadge("");
+    framesValid = false;                       // 整段还没好
+    frames = [];
+    $("btnPlay").disabled = true;
+    $("btnPlay").textContent = "整段后台准备中…";
+    $("btnPlay").title = "整段在后台渲染，好了会自动可点";
+    fillPreviewInBackground();
+  } catch (e){
+    psErr("server-path", (e && e.stack) || e);
+    toast("预览失败：" + e.message, "bad");
+    busyBadge("");
+  } finally {
+    renderDone();
+  }
+}
+
+/* 后台补整段。独立序号：参数又变了的话，这批回来直接作废。 */
+let previewBgSeq = 0;
+async function fillPreviewInBackground(){
+  const mine = ++previewBgSeq;
+  try{
+    const fps = 10;
+    // ⚠️ 必须把 scale 一起传：服务端按这个 scale **预编码**帧塞进缓存，
+    //    界面随后也按同样的 scale 取帧才能命中。
+    const r = await fetch("/api/preview?" + qs({ preview_fps: fps, scale: zoom }));
+    const st = await r.json();
+    if (st.error) throw new Error(st.error);
+    if (mine !== previewBgSeq) return;         // 期间参数/素材又变了
+    frameCount = st.n_frames; previewFps = st.preview_fps;
+    if (st.light_xy_used) lastLightUsed = st.light_xy_used.slice();
+    if (st.grid) logicalSize = st.grid.slice();
+    if (zoomAuto) zoom = fitZoom();
+    applyZoom();
+    frames = [];
+    for (let i = 0; i < frameCount; i++){
+      frames.push("/api/frame?" + qs({ i: i, scale: zoom }));
+    }
+    framesValid = true;                        // 这组 frames 对应现在参数
+    $("scrub").max = Math.max(0, frameCount - 1);
+    if (cur >= frameCount) cur = 0;
+    $("scrub").value = cur;
+    updateReadout(st);
+    $("btnPlay").disabled = false;
+    $("btnPlay").textContent = tr("播放");
+    $("btnPlay").title = "";
+    preload(0, Math.min(6, frameCount));
+    preload(6, frameCount).then(() => { $("plate").classList.add("on"); });
+    toast(`整段就绪 · ${frameCount} 帧 @ ${previewFps}fps（${st.seconds}s 循环）`, "ok");
+    // ⚠️ 后台完成不经 renderDone，单独记一份 —— 启动体检要等的就是这个事件
+    PAGE_STATE.bg = { ok: true, n_frames: frameCount, ms: Date.now() - mine };
+    recordFinal();
+  } catch (e){
+    if (mine !== previewBgSeq) return;
+    psErr("bg-preview", (e && e.stack) || e);
+    PAGE_STATE.bg = { ok: false, err: (e && e.message) || String(e) };
+    recordFinal();
+    toast("整段预览失败：" + e.message, "bad");
+    $("btnPlay").disabled = false;
+    $("btnPlay").textContent = "播放 ⟳";
+    $("btnPlay").title = "点此重渲整段";
+  }
+}
+
+/* 同步渲整段（点播放时若整段已过期，走这条；这是"值得花那几秒"的时刻） */
+async function renderFullPreview(){
+  if (busy) return;
+  busy = true;
+  $("btnPreview").disabled = true;
+  stopPlay();
+  busyBadgeTimed("渲整段中（为播放准备）…");
+  try{
+    const fps = 10;
+    const r = await fetch("/api/preview?" + qs({ preview_fps: fps, scale: zoom }));
+    const st = await r.json();
+    if (st.error) throw new Error(st.error);
+    sceneStale = false;
+    frameCount = st.n_frames; previewFps = st.preview_fps;
+    if (st.light_xy_used) lastLightUsed = st.light_xy_used.slice();
+    if (st.grid) logicalSize = st.grid.slice();
+    if (zoomAuto) zoom = fitZoom();
+    applyZoom();
+    frames = [];
+    for (let i = 0; i < frameCount; i++){
+      frames.push("/api/frame?" + qs({ i: i, scale: zoom }));
+    }
+    framesValid = true;
+    $("scrub").max = Math.max(0, frameCount - 1);
+    if (cur >= frameCount) cur = 0;
+    $("scrub").value = cur;
+    updateReadout(st);
+    busyBadge("预载帧…");
+    await preload(0, Math.min(6, frameCount));
+    $("frame").src = frames[cur];
+    $("badge").classList.remove("on");
+    preload(6, frameCount).then(() => { $("plate").classList.add("on"); });
+  } catch (e){
+    psErr("full-preview", (e && e.stack) || e);
+    toast("整段渲染失败：" + e.message, "bad");
+    busyBadge("");
+  } finally {
+    renderDone();
+  }
+}
+function preload(a, b){
+  const jobs = [];
+  for (let i = a; i < b; i++){
+    const u = frames[i];
+    if (!u || imgCache.has(u)) continue;
+    jobs.push(new Promise(r => {
+      const im = new Image();
+      im.onload = im.onerror = () => { imgCache.set(u, 1); r(); };
+      im.src = u;
+    }));
+  }
+  return Promise.all(jobs);
+}
+
+/* ⭐ 播放按钮的处理（模块级 —— 探针也要走同一条路）。
+ *
+ * ⚠️ 整段过期时要调 **renderFullPreview**（同步渲整段），不能调 renderPreview：
+ *    首帧优先版的 renderPreview 只出一张图就返回（整段在后台补），
+ *    回来时 frames 还是空的 → play() 静默不响 —— 「点播放没反应」就是这么来的。
+ */
+async function onPlayClick(){
+  if (playing){ stopPlay(); return; }
+  // ⭐ GPU 后端：整段在浏览器里渲，不需要"渲整段帧"这一步
+  if (gpuCanRender()){
+    if (!gpuRenderer || !gpuRenderer.scene){ await renderPreview(); }
+    if (backendActive()){
+      // ⚠️ 纵深防御：GPU 不依赖 frames[]，若 invalidateFrames 曾把标记
+      //    打成 false（旧版本就会），这里必须复位，否则 play() 静默返回。
+      framesValid = true;
+      play(); return;
+    }
+  }
+  // ⭐ 点播放才渲整段（这才是值得花那几秒的时刻）。
+  //    ⚠️ 判据要同时看"有没有渲过"和"是不是对应当前参数" ——
+  //    只看长度会放旧参数的帧（用户报的"跳回预设效果"就是这个）。
+  if (!frames.length || !framesValid){ await renderFullPreview(); }
+  play();
+}
+
+/* ── 播放 ── */
+function play(){
+  if (!frameCount || !framesValid) return;
+  // ⭐ GPU 后端：用 rAF 直接推 t，不逐帧取图
+  if (gpuCanRender()){ gpuPlay(); return; }
+  playing = true; $("btnPlay").textContent = tr("暂停"); $("btnPlay").title = "";
+  const step = () => {
+    if (!playing) return;
+    $("frame").src = frames[cur];
+    $("plate").textContent = `${tr("帧")} ${cur} / ${frameCount - 1}`;
+    $("scrub").value = cur;
+    $("scrubT").textContent = "t = " + (cur / frameCount).toFixed(2);
+    cur = (cur + 1) % frameCount;
+    playTimer = setTimeout(step, 1000 / previewFps);
+  };
+  step();
+}
+function stopPlay(){
+  if (gpuRaf){ cancelAnimationFrame(gpuRaf); gpuRaf = 0; }
+  playing = false; clearTimeout(playTimer);
+  $("btnPlay").textContent = framesValid ? "播放" : "播放 ⟳";
+}
+
+/* ── 仪表读数条 ── */
+function updateReadout(st){
+  const amp = st.amplitude, m = st.motion;
+  const loopOK = st.loop_ok;
+  const cells = [
+    {k:"循环闭合 frame(0)==frame(N)", v: loopOK === null ? "—" : (loopOK ? "逐位相同" : "接缝 " + st.loop_diff),
+     c: loopOK === null ? "" : (loopOK ? "ok" : "bad")},
+    {k:"色板 / 越界", v: `${st.palette_size} 色 · ${st.colors_outside === 0 ? "0 越界" : st.colors_outside + " 越界"}`,
+     c: st.colors_outside === 0 ? "ok" : "bad"},
+    {k:"网格 / 输出", v: `${st.grid[0]}×${st.grid[1]} ×${st.scale} → ${st.out_size[0]}×${st.out_size[1]}`},
+    {k:"显示倍率", v: (zoomAuto ? tr("适应") + " " : "") + "×" + zoom +
+      `  (${st.grid[0] * zoom}×${st.grid[1] * zoom} 屏幕像素)`},
+    {k:"相邻帧差", v: `${m.adj_min.toFixed(2)} ~ ${m.adj_max.toFixed(2)}`,
+     c: m.adj_mean < 0.05 ? "bad" : ""},
+    {k:"半周期帧差", v: m.half_period.toFixed(2),
+     c: m.half_period < 0.3 ? "bad" : (m.half_period < 1 ? "warn" : "ok")},
+    {k:"光源位置(用到的)", v: st.light_xy_used.map(x => x.toFixed(2)).join(", "),
+     c: (Math.abs(st.light_xy_used[0] - st.light_xy[0]) > 0.01) ? "warn" : ""},
+    {k:"雾色 / 饱和", v: st.fog_color.map(x => x.toFixed(2)).join(" ") +
+      (st.fog_color_auto ? " 自动" : " 手动") + " · sat " + (st.fog_sat_actual ?? 0).toFixed(2),
+     c: (st.fog_sat_actual ?? 0) > 0.45 ? "warn" : ""},
+  ];
+  let html = cells.map(c => `<div class="cell"><div class="k">${tr(c.k)}</div>
+      <div class="v ${c.c || ""}">${c.v}</div></div>`).join("");
+  html += `<div class="cell"><div class="k">${tr("动画幅度分布")}</div>
+      <div class="v">静止 ${(amp.static*100).toFixed(0)}% · 明显 ${(amp.strong*100).toFixed(0)}% · max ${amp.max}</div>
+      <div class="amp"><i class="s" style="flex:${Math.max(amp.static,.001)}"></i>
+        <i class="f" style="flex:${Math.max(amp.faint,.001)}"></i>
+        <i class="v" style="flex:${Math.max(amp.visible,.001)}"></i>
+        <i class="g" style="flex:${Math.max(amp.strong,.001)}"></i></div></div>`;
+  $("readout").innerHTML = html;
+  decorateReadout();
+}
+
+/* ── 素材 ── */
+async function loadAssets(keep){
+  const r = await fetch("/api/assets");
+  const d = await r.json();
+  const sel = $("asset");
+  const prev = keep || sel.value;
+  sel.innerHTML = "";
+  let nUp = 0;
+  for (const a of d.assets){
+    const o = document.createElement("option");
+    o.value = a.name;
+    o.textContent = (a.origin === "upload" ? "↑ " : "") +
+                    a.name.replace(/\.(jpg|jpeg|png|webp|bmp|tif|tiff|gif|avif)$/i, "");
+    o.dataset.meta = `${a.w}×${a.h} · ${a.ratio}`;
+    o.dataset.origin = a.origin;
+    sel.appendChild(o);
+    if (a.origin === "upload") nUp++;
+  }
+  // 有上传的图就优先选中它（用户刚上传，多半就是想用它）
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  else if (nUp) sel.value = [...sel.options].find(o => o.dataset.origin === "upload").value;
+  syncPicker();
+  return d.assets.length;
+}
+function syncPicker(){
+  const sel = $("asset");
+  const o = sel.selectedOptions[0];
+  $("assetMeta").textContent = o ? o.dataset.meta : "";
+  $("thumb").src = "/api/still?" + qs({ t: "0", scale: "2" });
+  const f = $("frame");
+  if (f && !f._mkBound){ f._mkBound = 1; f.addEventListener("load", updateMarker); }
+}
+
+/* ── 光源位置标记 ──
+   用户反馈：光源非自动时是"纯盲拉 XY 滑杆"，完全看不到拉到哪里。
+   这里在画面上叠一个标记，位置按**归一化坐标**换算到图像的显示框内，
+   所以缩放窗口也跟得上。 */
+function updateMarker(){
+  const mk = $("marker");
+  const hx = $("chH"), vy = $("chV");
+  if (!$("showMarker").checked){
+    mk.classList.remove("on"); hx.classList.remove("on"); vy.classList.remove("on"); return;
+  }
+// ⚠️⚠️ 位置必须量**取景框**（stagebox），不能量 <img>。
+  //    GPU 模式下 <img> 是 display:none —— offsetWidth 恒为 0，
+  //    于是这里直接 return，**光源标记整个消失**（用户实测症状：
+  //    「开启光源位置显示丢失了之前的效果」）。
+  //    img 和 canvas 都装在 stagebox 里、CSS 尺寸相同，量它对两条后端都对。
+  const box = $("stagebox");
+  if (!box.offsetWidth || !box.offsetHeight) return;
+  // 手动模式读滑杆的**即时值**（P.rays_x/y），自动模式读服务端实际用的位置。
+  // ⚠️ 关键：本函数在滑杆的 oninput 里也会被调用 —— 所以拖动时标记是**跟着走**的，
+  //    而不是等渲染返回才跳一下（用户报的"跳变"就是这个）。
+  const x = (P.rays_auto_center ? lastLightUsed[0] : P.rays_x);
+  const y = (P.rays_auto_center ? lastLightUsed[1] : P.rays_y);
+  const W = box.offsetWidth, H = box.offsetHeight;
+  mk.style.left = (x * W) + "px";
+  mk.style.top  = (y * H) + "px";
+  mk.classList.add("on");
+  // 十字准线：贯穿全图，边缘钉上数值 —— 这样 X/Y 各在哪一列/行一眼可见
+  hx.style.top = Math.round(y * H) + "px";
+  vy.style.left = Math.round(x * W) + "px";
+  hx.dataset.v = "Y " + y.toFixed(3);
+  vy.dataset.v = "X " + x.toFixed(3);
+  hx.classList.add("on"); vy.classList.add("on");
+  $("markerTag").textContent =
+    tr(P.rays_auto_center ? "光源 自动" : "光源 手动") + " " +
+    "X " + x.toFixed(2) + "  Y " + y.toFixed(2);
+  updateMarker2();
+}
+/* 副光源标记（青十字）：位置永远是滑杆即时值；仅在副光源开启且
+   「光源」显隐开关打开时出现。跟随主标记的所有更新路径（zoom/滑杆/显隐）。 */
+function updateMarker2(){
+  const mk = $("marker2");
+  if (!mk) return;
+  if (!$("showMarker").checked || !P.light2_on){
+    mk.classList.remove("on"); return;
+  }
+  const box = $("stagebox");
+  if (!box.offsetWidth || !box.offsetHeight) return;
+  const x = +P.light2_x || 0, y = +P.light2_y || 0;
+  mk.style.left = (x * box.offsetWidth) + "px";
+  mk.style.top = (y * box.offsetHeight) + "px";
+  mk.classList.add("on");
+  $("marker2Tag").textContent = tr("副光源") + " X " + x.toFixed(2) + "  Y " + y.toFixed(2);
+}
+
+/* ══ 语言切换（M5.9）══ 重建参数区 + 刷新静态文案与运行时标签。
+ * 「适应」按钮的文案由 applyLang 统一重设；播放键按当前状态取词。 */
+function applyLang(){
+  $("btnLang").textContent = (LANG === "en") ? "中文" : "EN";
+  document.documentElement.lang = (LANG === "en") ? "en" : "zh-CN";
+  for (const [id, key] of [["btnUpload", "上传图片…"], ["btnPreview", "渲染预览"],
+                           ["btnReset", "复位"], ["btnSave", "存参数"],
+                           ["btnLoad", "取参数"], ["btnExport", "全量出图"]]){
+    const el = $(id);
+    if (el) el.textContent = tr(key);
+  }
+  $("btnPlay").textContent = tr(typeof playing !== "undefined" && playing ? "暂停" : "播放");
+  const sub = document.querySelector(".brand .sub");
+  if (sub) sub.textContent = tr("调参台");
+  const pl = document.querySelector(".picklabel");
+  if (pl) pl.textContent = tr("素材");
+  const th = document.querySelector(".thumbhint");
+  if (th) th.textContent = tr("更换");
+  const sm = $("showMarker");
+  if (sm){ const sp = sm.parentElement.querySelector("span"); if (sp) sp.textContent = tr("光源"); }
+  const dt = document.querySelector(".debugbar .dtag");
+  if (dt) dt.textContent = tr("调试图");
+  const dbLabels = document.querySelectorAll(".debugbar label.sw > span");
+  const dbKeys = ["深度图（暗=近 蓝=远）", "等亮线（蓝90 橙95 红99 分位）", "体积光形状（归一化）"];
+  dbLabels.forEach((el, i) => { if (dbKeys[i]) el.textContent = tr(dbKeys[i]); });
+  const ss = document.querySelector(".sweep > summary");
+  if (ss) ss.textContent = tr("参数扫描 · 同一画面并排对比多个取值");
+  buildRail();
+  updateMarker();
+  refreshDebug();
+  updateZoomTag();
+  fillSweepKeys();
+}
+/* ══ 显示缩放：让尺寸只由「网格 × 整数倍」决定，与渲染分辨率彻底解耦 ══
+
+   ⚠️ 修的是一个真实的跳变 bug：
+   原来 img 用 `max-width:100%`，而拖动参数时为提速渲的是**半分辨率**图，
+   半分辨率的图在 CSS 里不会被放大 → 显示尺寸跟着变小；点播放用全分辨率 → 又变大。
+   画面一直在跳，用户看得出来。
+
+   根因是**显示尺寸被渲染分辨率牵着走**。现在改成：
+     · 服务端只告诉界面「逻辑输出尺寸」（网格 × 整数倍）
+     · 界面按 zoom 档位直接设定 stagebox 的像素宽高
+     · 拉取的图 scale **等于** zoom → 像素与显示 1:1，既不发虚也不非整数缩放
+   这样渲染分辨率怎么变（拖动 / 松手 / 播放），显示尺寸都不动。
+
+   zoom 取**整数**：像素画一旦被非整数缩放，方块就参差不齐 —— 这正是项目一直在防的。 */
+let lastLightUsed = [0.5, 0.5];
+let zoom = 1;              // 显示倍率（整数）
+let zoomAuto = true;       // true = 跟随窗口自适应；滚轮/± 之后变 false（固定）
+/* ⚠️ 逻辑尺寸用**像素网格**，不是最终产物尺寸（grid × scene.scale）。
+   取后者会导致 480 网格算成 1920px，在小窗口里默认就要滚动 —— 首屏看不到全图。
+   用网格尺寸的含义很直观：**×1 = 一个屏幕像素对应一个艺术像素**。 */
+let logicalSize = null;    // [gw, gh] 像素网格尺寸
+
+function fitZoom(){
+  const st = document.querySelector(".stage");
+  if (!st || !logicalSize) return 1;
+  const pad = 30;
+  const raw = Math.min((st.clientWidth - pad) / logicalSize[0],
+                       (st.clientHeight - pad) / logicalSize[1]);
+  // 朴素向下取整：绝不默认产生滚动条。想要更大就滚轮推上去（那才会滚动）。
+  // 取**整数**是为了像素方正 —— 非整数缩放会让方块参差不齐，正是项目一直在防的。
+  return Math.max(1, Math.min(16, Math.floor(raw) || 1));
+}
+function applyZoom(){
+  const box = $("stagebox"), st = document.querySelector(".stage");
+  if (!box) return;
+  if (!logicalSize){ zoom = Math.max(1, zoom || 1); updateZoomTag(); return; }
+  box.style.width = (logicalSize[0] * zoom) + "px";
+  box.style.height = (logicalSize[1] * zoom) + "px";
+  // 画布的后备缓冲 = 网格尺寸（1:1 上屏）；CSS 尺寸就是上面这个 box 尺寸。
+  gpuSyncCanvas();
+  if (st) st.classList.toggle("zoomed", zoom > fitZoom());
+  syncDebugSize();
+  if (zoomAuto) recenterPan();   // 「适应」= 回中 + 适配；手动缩放/拖动保留任意位移
+  applyPan();
+  updateZoomTag();
+  updateMarker();
+}
+function updateZoomTag(){
+  const t = $("zoomTag");
+  t.textContent = zoomAuto ? (tr("适应") + " ×" + zoom) : ("×" + zoom);
+  t.className = zoomAuto ? "auto" : "";
+}
+function setZoom(z, manual){
+  zoom = Math.max(1, Math.min(16, Math.round(z)));
+  zoomAuto = !manual;
+  applyZoom();
+  // 缩放档变了 → 取图倍率也要跟着变，重取当前帧
+  if (frames.length) swapFrame(frames[cur] || frames[0]);
+  else renderStillOnly();
+}
+function zoomBy(delta){
+  setZoom((zoomAuto ? fitZoom() : zoom) + delta, true);
+}
+function bindZoom(){
+  const st = document.querySelector(".stage");
+  // 滚轮缩放：必须 passive:false 才能 preventDefault（否则页面会跟着滚）
+  // ⭐ 以**光标为不动点**（画布语义）：光标下的逻辑坐标
+  //    L = (光标 − 世界平移) / 旧倍率；缩放后令 L 仍落在光标下 →
+  //    pan' = 光标 − L×新倍率。zoom 是整数档，每档最多偏 1px。
+  st.addEventListener("wheel", (e) => {
+    if (Math.abs(e.deltaY) < 1) return;
+    e.preventDefault();
+    const rect = st.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const oldZ = zoomAuto ? fitZoom() : zoom;
+    const Lx = (cx - panX) / oldZ, Ly = (cy - panY) / oldZ;
+    zoomBy(e.deltaY < 0 ? 1 : -1);
+    const newZ = zoomAuto ? fitZoom() : zoom;
+    panX = cx - Lx * newZ;
+    panY = cy - Ly * newZ;
+    applyPan();
+  }, { passive: false });
+  // 双击：在「适应」与 ×1 之间切换
+  st.addEventListener("dblclick", () => {
+    if (zoomAuto) setZoom(1, true); else setZoom(fitZoom(), false);
+  });
+  window.addEventListener("resize", () => { if (zoomAuto){ zoom = fitZoom(); applyZoom(); } });
+}
+/* ══ 画布平移：**中键拖动** = 移动画布（滚轮已用于缩放）══
+   ⚠️ 只用中键 —— 左键拖图片是"拖出去用"（M3-DRAG 的导出语义，不能抢）。 */
+function bindPan(){
+  const st = document.querySelector(".stage");
+  if (!st) return;
+  let drag = null;
+  st.addEventListener("mousedown", (e) => {
+    if (e.button !== 1) return;                 // 仅中键
+    e.preventDefault();                          // 阻止浏览器中键自动滚动
+    drag = { x: e.clientX, y: e.clientY, px: panX, py: panY };
+    st.classList.add("panning");
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!drag) return;
+    panX = drag.px + (e.clientX - drag.x);
+    panY = drag.py + (e.clientY - drag.y);
+    applyPan();
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (drag && e.button === 1){ drag = null; st.classList.remove("panning"); }
+  });
+  st.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+}
+/* ══ 调试图：与主画面**同一取景框**（渲染图最前，默认全关）══
+   布局由张数决定（用户定的规则，无选择器）：
+     0 张 → 主画面独占；1-2 张 → 一行并排（渲染图最左）；
+     3 张 → 2×2（渲染图左上）。实现：#world 的 quad 类 + 子元素 order。
+   服务端 /api/debug 出 PNG。URL 携带全部当前参数 → 同参数命中浏览器缓存；
+   参数一变 URL 变 → 自动换新图。图上绿十字 = 渲染真正使用的光源位置。 */
+const DEBUG_KINDS = [
+  ["dbgDepth", "depth", "深度图（暗=近 蓝=远）"],
+  ["dbgLuma", "luma", "等亮线（蓝90 橙95 红99 分位）"],
+  ["dbgVol", "vol", "体积光形状（归一化）"],
+];
+function debugOn(){ return DEBUG_KINDS.some(k => $(k[0]) && $(k[0]).checked); }
+function syncDebugSize(){
+  /* 调试图与主画面同宽（stagebox 是 zoom 定的显式 px，跟它对齐才等高） */
+  const box = $("stagebox");
+  if (!box || !box.offsetWidth) return;
+  document.querySelectorAll("#world .dbgcell img").forEach(im => { im.style.width = box.offsetWidth + "px"; });
+}
+/* ══ 画布平移（transform 版，**全自由**画布）══
+   ⚠️ 不用 scrollLeft：滚动平移的范围被内容边界限死（用户实测"范围太小"），
+   且滚动容器里的绝对定位元素（帧指示器）会跟着"飞走"。transform 版两者皆无。
+   ⚠️ 全自由 = **无边界钳制**：内容可以拖到画布任意位置（包括完全出界），
+   「适应」键 = 回中 + 适配（zoomAuto 路径每次 applyZoom 都 recenter）。
+   panX/panY = 世界层的平移量。 */
+let panX = 0, panY = 0;
+function applyPan(){
+  const world = $("world");
+  if (world) world.style.transform = "translate(" + panX + "px," + panY + "px)";
+}
+function recenterPan(){
+  const st = document.querySelector(".stage"), world = $("world");
+  if (!st || !world) return;
+  panX = (st.clientWidth - 28 - world.offsetWidth) / 2;
+  panY = (st.clientHeight - 28 - world.offsetHeight) / 2;
+}
+function refreshDebug(){
+  const world = $("world");
+  if (!world) return;
+  const want = DEBUG_KINDS.filter(k => $(k[0]) && $(k[0]).checked);
+  [...world.querySelectorAll(".dbgcell")].forEach(c => {
+    if (!want.some(k => k[1] === c.dataset.kind)) c.remove();
+  });
+  world.classList.toggle("quad", want.length >= 3);
+  want.forEach(([id, kind, cap], i) => {
+    let cell = world.querySelector('.dbgcell[data-kind="' + kind + '"]');
+    if (!cell){
+      cell = document.createElement("div");
+      cell.className = "dbgcell";
+      cell.dataset.kind = kind;
+      const im = document.createElement("img");
+      im.alt = cap;
+      const cp = document.createElement("span");
+      cp.className = "cap"; cp.textContent = tr(cap);
+      cell.appendChild(im); cell.appendChild(cp);
+      world.appendChild(cell);
+    }
+    cell.style.order = i + 1;
+    const capEl = cell.querySelector(".cap");
+    if (capEl) capEl.textContent = tr(cap);
+    const src = "/api/debug?kind=" + kind + "&" + qs({});
+    const im = cell.querySelector("img");
+    if (im.dataset.src !== src){ im.dataset.src = src; im.src = src; }
+  });
+  $("stagebox").style.order = "0";
+  syncDebugSize();
+}
+let dbgTimer = 0;
+function scheduleDebug(){
+  if (!debugOn()) return;
+  clearTimeout(dbgTimer);
+  dbgTimer = setTimeout(refreshDebug, 300);
+}
+
+/* 取逻辑输出尺寸（不渲染）。尺寸只认这个，不认拉回来的图有多大。 */
+async function refreshMeta(){
+  try{
+    const r = await fetch("/api/meta?" + qs({}));
+    const d = await r.json();
+    if (d.error) return;
+    if (d.grid) logicalSize = d.grid.slice();
+    if (d.light_xy_used) lastLightUsed = d.light_xy_used.slice();
+    if (zoomAuto) zoom = fitZoom();
+    applyZoom();
+  } catch (e) { /* 元信息拿不到就用旧值，不打断流程 */ }
+}
+
+/* ── 上传：让管线不限于内置样例 ── */
+async function uploadFile(file){
+  if (!file) return;
+  if (!file.type.startsWith("image/") && !/\.(jpe?g|png|webp|bmp|tiff?|gif|avif)$/i.test(file.name)){
+    toast("这不是图片文件：" + file.name, "bad");
+    return;
+  }
+  busyBadge("上传中…");
+  try{
+    const url = "/api/upload?name=" + encodeURIComponent(file.name);
+    const r = await fetch(url, { method: "POST", body: file });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    await loadAssets(d.name);
+    sceneStale = true;
+    toast(`已载入 ${d.name}（${d.w}×${d.h}，${(d.bytes/1048576).toFixed(1)} MB）`, "ok");
+    renderPreview();
+  } catch (e){
+    toast("上传失败：" + e.message, "bad");
+    busyBadge("");
+  }
+}
+function bindUpload(){
+  $("btnUpload").onclick = () => $("fileInput").click();
+  $("thumbBtn").onclick = () => $("fileInput").click();
+  $("fileInput").onchange = () => {
+    uploadFile($("fileInput").files[0]);
+    $("fileInput").value = "";        // 允许重复选同一个文件
+  };
+  /* ── 整窗拖放上传 ──
+
+     ⚠️ 必须严格区分「外部文件拖入」与「页面内元素被拖动」，否则极易误上传。
+
+     用户报障：拖动预览画面那张图（想把这张成图拖出去用），
+     页面上却弹出"松手以载入这张图片"的遮罩 —— 松手就上传，很烦。
+
+     用**三层判据**，任一层判定为"内部拖动"就拒绝上传：
+
+       ① `internalDrag` 标记（最可靠）：页面内任何元素开始拖动时，
+          `dragstart` 会在文档里触发 —— 外部拖入则**没有** dragstart。
+          这个判据**不依赖 `dataTransfer.types`**，也就不受浏览器差异影响。
+       ② `types` 含 `"Files"`：外部文件拖入的唯一特征
+          （页面内拖动 img 时是 `["text/uri-list","text/html","text/plain"]`）。
+       ③ drop 阶段还要求 `files.length > 0`：规范里 `dataTransfer.files`
+          只在 drop 时才可读，dragenter/dragover 阶段是空的 —— 所以
+          ①② 用于前两个阶段，③ 用于 drop。
+
+     ⚠️ 另外原来的 `dragleave` 用 `--depth` 计数管理遮罩，跨子元素边界时
+     计数会失衡，导致遮罩闪烁或残留。改成 **dragover 刷新时间戳**：
+     每次 dragover 重置一个短定时器，停 260ms 没有新事件就自动隐藏。
+     这个写法不依赖事件配平，天然免疫计数错乱。 */
+  const dz = $("dropzone");
+  let internalDrag = false;
+  let dzTimer = null;
+
+  function showDropzone(){
+    dz.classList.add("on");
+    clearTimeout(dzTimer);
+    dzTimer = setTimeout(hideDropzone, 260);   // dragover 会持续刷新
+  }
+  function hideDropzone(){
+    clearTimeout(dzTimer); dzTimer = null;
+    dz.classList.remove("on");
+  }
+
+  /* ① 内部拖动标记。dragstart/dragend 用捕获阶段监听（true），
+        这样即使子元素 stopPropagation 也拿得到。
+        ⚠️ 不 preventDefault —— 用户可能就是要**把成图拖出去**用，
+        那是正常需求，我们只打标记让上传逻辑让路。 */
+  window.addEventListener("dragstart", () => { internalDrag = true; hideDropzone(); }, true);
+  window.addEventListener("dragend", () => { internalDrag = false; hideDropzone(); }, true);
+
+  /* ②③ 只有外部文件拖入才认 */
+  function isExternalFileDrag(e){
+    if (internalDrag) return false;
+    const t = e.dataTransfer && e.dataTransfer.types;
+    return !!t && Array.prototype.includes.call(t, "Files");
+  }
+
+  window.addEventListener("dragenter", (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault(); showDropzone();
+  });
+  window.addEventListener("dragover", (e) => {
+    if (!isExternalFileDrag(e)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = "copy"; showDropzone();
+  });
+  /* 不再需要 dragleave —— 遮罩由 dragover 的时间戳定时器自己收 */
+
+  window.addEventListener("drop", (e) => {
+    /* ⚠️ 任何 drop 都**先**阻止默认行为，不分情况。
+
+       不阻止的话浏览器会按拖入内容做导航：
+         · 页面内拖动的 img  → 导航到图片 URL（预览图是 `/api/still?...`，
+           跳过去就是满屏一张图，调参界面被冲掉）
+         · 外部文件          → 直接打开那个文件
+       两种都会把界面弄没，所以这一步与"是不是要上传"无关，无条件做。
+
+       先阻止、再分派，也让下面的分支不必各自记着 preventDefault
+       （原先只有部分分支做了，漏一条就是一个"拖一下就白屏"的 bug）。 */
+    e.preventDefault();
+    hideDropzone();
+
+    if (internalDrag) return;                 // 页面内拖动：到此为止，绝不上传
+
+    if (!isExternalFileDrag(e)){
+      // 外部拖入但我们不认（多半是从别的网页拖来的图片链接）。
+      // 原本是静默无反应，用户会以为"拖坏了" —— 给个明确解释。
+      const types = (e.dataTransfer && e.dataTransfer.types) || [];
+      if (Array.prototype.includes.call(types, "text/uri-list")){
+        toast("这是一个网页图片链接，不是本地文件。请先把它保存到本地，再拖进来。");
+      }
+      return;
+    }
+
+    const files = e.dataTransfer && e.dataTransfer.files;          // ③ drop 阶段才可读
+    if (!files || !files.length) return;
+    uploadFile(files[0]);
+  });
+}
+
+/* ── 左键拖图出画面 = 单帧出图 ──
+ * 提供当前帧的**服务端渲染 URL**（t/scale 与画面一致）；拖到资源管理器/
+ * 桌面即下载该帧。两条后端都可拖（GPU 模式下 URL 仍是服务端渲染帧，
+ * 两链路已逐位验收一致）；拖回页面 = 换素材的上传语义（守卫照旧）。
+ * ⚠️ v1 曾依赖浏览器对 <img> 的原生拖拽，自由画布改造后不可靠 → 显式实现。 */
+function frameDragStart(e){
+  const t = (cur / Math.max(1, frameCount || 1)).toFixed(4);
+  const url = new URL("/api/still?" + qs({ t, scale: zoom }), location.href).href;
+  e.dataTransfer.setData("text/uri-list", url);
+  e.dataTransfer.setData("text/plain", url);
+  e.dataTransfer.effectAllowed = "copy";
+}
+$("frame").addEventListener("dragstart", frameDragStart);
+$("gpuCanvas").addEventListener("dragstart", frameDragStart);
+$("gpuCanvas").draggable = true;
+
+/* ── 全量出图 ── */
+async function doExport(){
+  if (busy) return;
+  try{
+    const r = await fetch("/api/export", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ params: P, asset: $("asset").value, format: "webp" })
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    toast("已开始全量渲染（480 网格，约 30~60 秒）…");
+    const poll = async () => {
+      const j = await (await fetch("/api/job?id=" + d.job)).json();
+      if (j.state === "running"){
+        busyBadge(`全量渲染 ${j.done}/${j.total}`);
+        setTimeout(poll, 700);
+      } else {
+        busyBadge("");
+        if (j.state === "done"){
+          toast(tr("出图完成") + " · " + j.msg + tr("，已开始下载"), "ok");
+          // ⭐ 走浏览器下载通道：服务端 Content-Disposition attachment →
+          //    文件直接落到用户的下载目录（idx0=动画，idx1=首帧 PNG）
+          (j.files || []).forEach((f, i) => {
+            setTimeout(() => {
+              const a = document.createElement("a");
+              a.href = "/api/export_file?job=" + d.job + "&idx=" + i;
+              document.body.appendChild(a); a.click(); a.remove();
+            }, 700 * (i + 1));
+          });
+        } else toast("出图失败：" + j.msg, "bad");
+      }
+    };
+    poll();
+  } catch (e){ toast("出图失败：" + e.message, "bad"); }
+}
+
+/* ── 参数扫描 ── */
+/* ⭐ 下拉里用中文名（括号内是实际参数键）—— 用户看不懂裸键名 */
+const SWEEP_LABELS = {
+  density:"雾浓度（density）", rays:"体积光强度（rays）", power:"距离幂次（power）",
+  fog_drift:"雾漂移（fog_drift）", flicker:"闪烁（flicker）", dust_count:"尘埃数量（dust_count）",
+  colors:"色板数量（colors）", dither:"抖动（dither）", edge_strength:"边缘压暗（edge_strength）",
+  bloom:"辉光（bloom）", levels:"自动色阶（levels）", sharpen:"锐化 USM（sharpen）"
+};
+function fillSweepKeys(){
+  const sel = $("sweepKey");
+  sel.innerHTML = "";
+  const keys = ["density","rays","power","fog_drift","flicker","dust_count","colors",
+                "dither","edge_strength","bloom","levels","sharpen"];
+  for (const k of keys){
+    const o = document.createElement("option");
+    o.value = k;                                   // value 保持英文键，逻辑不受影响
+    o.textContent = SWEEP_LABELS[k] || k;
+    sel.appendChild(o);
+  }
+  sel.value = "density";
+  const set = () => {
+    const v = {density:"0.4, 0.7, 1.1, 1.4", rays:"0.3, 0.55, 0.9", power:"2, 3, 4",
+               fog_drift:"0, 0.3, 0.7", flicker:"0, 0.16, 0.4", dust_count:"0, 200, 400",
+               colors:"8, 16, 32, 64"}[sel.value];
+    if (v) $("sweepVals").value = v;
+  };
+  sel.onchange = set; set();
+}
+async function doSweep(){
+  const key = $("sweepKey").value;
+  const img = $("sweepImg");
+  img.style.display = "block";
+  img.src = "/api/sweep?" + qs({ key: key, values: $("sweepVals").value, t: "0" });
+  // ⭐ 取值条：点一下就把该值**应用到当前参数**（并按需重渲）。
+  //    之前扫描只给一张图，看完还得手抄数字到滑杆 —— 「意义不明」一半是这个。
+  const chips = $("sweepChips");
+  chips.innerHTML = "";
+  for (const raw of $("sweepVals").value.split(",")){
+    const v = parseFloat(raw);
+    if (!isFinite(v)) continue;
+    const b = document.createElement("button");
+    b.className = "mini";
+    b.textContent = (SWEEP_LABELS[key] || key) + " = " + v;
+    b.title = "点击应用这个取值（会按需重渲预览）";
+    b.onclick = () => {
+      let row = null;
+      for (const g of SPEC) for (const r of g.rows){ if (r.k === key) row = r; }
+      P[key] = v;
+      onParamChange(row || { k: key }, true, key);
+      toast("已应用 " + key + " = " + v, "ok");
+    };
+    chips.appendChild(b);
+  }
+}
+
+/* ── 仪表条：高度与每栏宽度可拖拽 ──
+ *
+ * 判别栏用它的**标签文字**（.k）当 key —— 每次读数刷新都会重建 DOM，
+ * 宽度存在 localStorage 里按 key 回填，这样拖出来的布局在刷新后还在。
+ * 横向放不下时 .readout 自己横向滚动，内容不会再被截断。 */
+let roWidths = {};
+try { roWidths = JSON.parse(localStorage.getItem("roWidths") || "{}"); } catch (e) { roWidths = {}; }
+
+function decorateReadout(){
+  const ro = $("readout");
+  for (const cell of ro.querySelectorAll(".cell")){
+    const kEl = cell.querySelector(".k");
+    const key = kEl ? kEl.textContent : "";
+    const w = roWidths[key];
+    if (w) cell.style.flex = "0 0 " + w + "px";
+    const v = cell.querySelector(".v");
+    if (v && !v.title) v.title = v.textContent;      // 悬停看被省略号吞掉的全文
+    const div = document.createElement("div");
+    div.className = "ro-div";
+    div.title = "左右拖动调整「" + key + "」栏宽；双击复位";
+    div.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const startW = cell.getBoundingClientRect().width;
+      const startX = e.clientX;
+      const move = (ev) => {
+        const w2 = Math.max(96, Math.min(640, startW + ev.clientX - startX));
+        cell.style.flex = "0 0 " + w2 + "px";
+        roWidths[key] = w2;
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        try { localStorage.setItem("roWidths", JSON.stringify(roWidths)); } catch (e2) {}
+      };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+    div.addEventListener("dblclick", () => {
+      delete roWidths[key];
+      cell.style.flex = "";
+      try { localStorage.setItem("roWidths", JSON.stringify(roWidths)); } catch (e2) {}
+    });
+    cell.insertAdjacentElement("afterend", div);
+  }
+}
+
+function initRoHeight(){
+  const h = parseFloat(localStorage.getItem("roHeight"));
+  if (h && isFinite(h)) document.documentElement.style.setProperty("--ro-h", h + "px");
+  $("roHandle").addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const startH = $("readout").getBoundingClientRect().height;
+    const startY = e.clientY;
+    const move = (ev) => {
+      const h2 = Math.max(36, Math.min(window.innerHeight * 0.6, startH + (startY - ev.clientY)));
+      document.documentElement.style.setProperty("--ro-h", h2 + "px");
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      const h3 = $("readout").getBoundingClientRect().height;
+      try { localStorage.setItem("roHeight", String(Math.round(h3))); } catch (e2) {}
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+  $("roHandle").addEventListener("dblclick", () => {
+    document.documentElement.style.removeProperty("--ro-h");
+    try { localStorage.removeItem("roHeight"); } catch (e2) {}
+  });
+}
+
+/* ── 存取参数 ── */
+async function saveParams(){
+  const name = prompt("参数存档名（例如 night-v1）");
+  if (!name) return;
+  const r = await fetch("/api/params", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ name: name, params: P })
+  });
+  const d = await r.json();
+  toast(d.ok ? "已存为 " + d.name : "存失败：" + d.error, d.ok ? "ok" : "bad");
+}
+async function loadParams(){
+  const r = await fetch("/api/params");
+  const d = await r.json();
+  const list = d.saved || [];
+  if (!list.length){ toast("还没有存档"); return; }
+  const name = prompt("要载入哪个？\n" + list.join("\n"));
+  if (!name) return;
+  const r2 = await fetch("/api/params?name=" + encodeURIComponent(name));
+  const d2 = await r2.json();
+  if (d2.error){ toast("载入失败：" + d2.error, "bad"); return; }
+  Object.assign(P, d2.params);
+  buildRail(); sceneStale = true; renderPreview();
+  toast("已载入 " + name, "ok");
+}
+
+/* ── 启动 ── */
+/* ══════════════════════════════════════════════════════════════════
+ * WebGPU 渲染后端
+ *
+ * ⚠️ 设计上的三条硬要求：
+ *
+ *   ① **必须能回退。** 没有 WebGPU 的浏览器/设备要照旧能用 —— GPU 是加速手段
+ *      不是必需条件。任何一步失败（无 navigator.gpu / 拿不到适配器 /
+ *      着色器编译失败 / 设备丢失）都要静默切回服务端，并且**说清原因**。
+ *
+ *   ② **服务端路径一行都不能动。** 它现在是"标准答案"：验收台比的就是它。
+ *      所以这里做的是"在它旁边加一条路"，而不是改造它。
+ *
+ *   ③ **画面尺寸逻辑共用。** 画布的后备缓冲 = 像素网格尺寸，CSS 尺寸 =
+ *      网格 × 整数 zoom —— 与服务端的 img 走的是同一个 applyZoom。
+ *      这样切后端画面不会跳尺寸（那个 bug 我们已经修过一次了）。
+ * ══════════════════════════════════════════════════════════════════ */
+/* ⚠️ 加 `?backend=server` 可以**确定性**地锁定服务端渲染。
+ *
+ *    为什么需要它：验回退路径时我先是"去掉无头 WebGPU 开关"，结果
+ *    无头 Edge 这版**默认就带 WebGPU**，于是验的是 GPU 路径 ——
+ *    **判据判错了对象**，还真报出几条"服务端模式下……"的假问题。
+ *    用 URL 参数锁定就没有这种不确定性：不看浏览器脸色。 */
+/* ═══ 后端选择 ═══
+ *
+ * ⭐ **默认是服务端渲染（CPU）。** GPU 要**显式开启**：`?backend=gpu`，或点「后端」按钮。
+ *
+ *    为什么默认不开（2026-09-12 用户实测的结论）：渲染链本身是好的
+ *    （与验收台逐像素比对 1.13%、循环闭合逐位相同），但**交互路径**
+ *    （播放 / 滑杆 / 切图 / 光源标记）没有逐一接线验证，用户实测
+ *    "前端功能好像全都爆掉了"。**先保证工具可用**；GPU 的交互修完
+ *    并用交互探针验过之前，只作为可选项存在。
+ *
+ *    `?backend=server` / `?backend=gpu` 都能**确定性**地锁定
+ *    （不靠浏览器脸色 —— 实测无头 Edge 默认就带 WebGPU，靠 flag 会验错对象）。 */
+let backendPref = (function(){
+  try {
+    const v = new URLSearchParams(location.search).get("backend");
+    return v === "gpu" ? "auto" : "server";   // 默认（无参数）= 服务端
+  } catch (e) { return "server"; }
+})();        // 'auto'（= GPU 已开）| 'server'
+let gpuRenderer = null, gpuReady = false, gpuReason = '', gpuInfo = '';
+let gpuSceneKey = '', gpuAssetsKey = '';
+let gpuBuild = '';
+let gpuPreviewStats = null;      // GPU 模式下自检出来的统计（服务端那套用不了）
+let gpuBusy = false;
+let gpuRaf = 0;
+
+function backendActive(){ return gpuReady && backendPref !== 'server'; }
+
+/* "这一帧能不能用 GPU 渲"的**唯一**判定点。
+ *
+ * 视差（M5）已移植到 GPU（parallax_splat / parallax_apply 两个 pass，
+ * 前向 splatting + u32 定点原子累加），所以现在它就是 backendActive()。
+ * 保留这个函数是为了**以后再有服务端专属特性时有一个明确的挂点** ——
+ * 不要让条件散落在 7 个渲染分支里。 */
+function gpuCanRender(){
+  return backendActive();
+}
+
+function gpuBtn(state, text, title){
+  const b = $("btnBackend");
+  b.className = "be" + (state === "gpu" ? "" : (state === "bad" ? " bad" : " server"));
+  b.textContent = tr(text);
+  if (title) b.title = title;
+}
+
+/* 场景键：只含"改了就必须重传 base/far"的参数（贵、且不随滑杆变） */
+function sceneKeyNow(){
+  return ["grid_long","work_long","aspect","levels","sharpen","var_gain"]
+    .map(k => k + "=" + P[k]).join("&") + "&asset=" + $("asset").value;
+}
+/* 素材键：色板 / 核 / 粒子参数取决的参数（便宜，但要重算） */
+function assetsKeyNow(){
+  return ["density","power","rays","rays_spread","rays_sat","bloom","fog_drift",
+          "flicker","dust_count","dust_bright","dust_twinkle","dust_fade_far",
+          "dust_light_boost","colors","fog_r","fog_g","fog_b","fog_sat",
+          "rays_r","rays_g","rays_b","rays_auto_center","rays_x","rays_y"]
+    .map(k => k + "=" + P[k]).join("&");
+}
+
+//: 进行中的初始化 Promise —— 幂等要靠它，不能只看 `gpuRenderer`。
+let gpuInitPromise = null;
+
+async function _initBackendOnce(){
+  // ⚠️ **必须幂等**。一个 canvas 只能属于一个 device：
+  //    第二次 `ctx.configure()` 会把画布交给新 device，于是旧 device 的
+  //    `getCurrentTexture()` 返回的纹理**属于另一个 device**，
+  //    渲染时报 "TextureView is associated with [Device], and cannot be used
+  //    with [Device]"，**整个 command buffer 被静默丢弃** ——
+  //    所有 dispatch 都不执行，输出全黑，而且 submit 不抛异常。
+  //    （这个坑实测花了一轮：先以为渲染链坏了，逐缓冲诊断才发现连
+  //      直接从场景包上传的 base/far 都是 0。）
+  if (backendPref === "server"){
+    // 被 `?backend=server` 显式锁定：**连设备都不要建**（建了也没人用，
+    // 还会占着一个 canvas —— 而 canvas 只能属于一个 device）。
+    gpuReason = "被 URL 参数锁定";
+    gpuBtn("server", "后端：服务端", "已用 ?backend=server 锁定服务端渲染");
+    return;
+  }
+  if (!("gpu" in navigator)){
+    gpuReason = "浏览器没有 WebGPU";
+    backendPref = "server";
+    gpuBtn("server", "后端：服务端", gpuReason + "（用服务端渲染）");
+    return;
+  }
+  try{
+    gpuBtn("server", "后端：初始化…", "正在初始化 WebGPU");
+    const r = new GpuRenderer($("gpuCanvas"));
+    await r.init();
+    gpuRenderer = r;
+    gpuReady = true;
+    gpuInfo = r.info;
+    $("stagebox").classList.add("gpu");
+    gpuBtn("gpu", "后端：GPU ✓", "WebGPU 加速中\n" + r.info);
+    // ⚠️ 把 GPU 脚本的**版本指纹**放进标题：同一 URL 的脚本被浏览器缓存后，
+    //    "你跑的是哪一版"就无法从画面判断（实测：缓存 1h 的旧 JS 会让
+    //    GPU 模式唯独缺光柱）。指纹一致 = 两边跑的是同一份代码。
+    fetch("/api/gpuasset?name=m3_wgsl_uniforms").then(function (r2) {
+      return r2.text();
+    }).then(function (txt) {
+      var hsh = 0;
+      for (var i = 0; i < txt.length; i++) { hsh = (hsh * 31 + txt.charCodeAt(i)) | 0; }
+      gpuBuild = (hsh >>> 0).toString(16).slice(0, 8);
+      document.title = "pixelart · build " + gpuBuild;
+      ps("build", { gpuBuild: gpuBuild });
+    }).catch(function () {});
+    /* ⚠️⚠️ 设备级错误**必须常驻回报**。
+     * WebGPU 的校验错误默认只在控制台打一行，而**整条 command buffer 会被丢弃** ——
+     * 症状就是"画布全黑但不报错"。实测：接上视差链后首帧全黑，
+     * 页面诊断里一条错误都没有，只能靠这个 handler 找到原因。 */
+    r.dev.addEventListener("uncapturederror", (ev) => {
+      psErr("gpu-uncaptured", ev.error && ev.error.message
+        ? ev.error.message : String(ev.error));
+    });
+    toast("已启用 WebGPU 渲染（" + r.info + "）", "ok");
+    // ⚠️ 设备丢失（驱动重置 / 显存不足 / 远程会话切换）是**运行时**事件：
+    //    不挂这个钩子的话，症状是"用着用着所有按钮静默失灵"（用户实测遇到过
+    //    "莫名其妙好了/坏了"的切换）。丢了就自动回退服务端并明说。
+    r.dev.lost.then((info) => {
+      psErr("device-lost", (info && (info.message || info.reason)) || "device lost");
+      gpuReady = false; gpuRenderer = null;
+      stopPlay();
+      $("stagebox").classList.remove("gpu");
+      gpuBtn("bad", "后端：服务端", "GPU 设备丢失已自动回退：" + ((info && info.message) || ""));
+      toast("GPU 设备丢失，已切回服务端渲染", "bad");
+      renderPreview();
+    });
+  } catch (e){
+    gpuReason = e && e.message ? e.message : String(e);
+    gpuReady = false;
+    gpuRenderer = null;
+    gpuBtn("bad", "后端：服务端", "WebGPU 不可用：" + gpuReason + "\n已切回服务端渲染");
+    // ⚠️ 必须回报 —— 这里是**静默失败**的典型位置：异常被 catch 住、
+    //    界面只是悄悄把后端标成"服务端"，页面诊断里连一条错误都没有
+    //    （实测：探针跑了整轮才发现 GPU 根本没起来，而 errors 为空）。
+    psErr("gpu-init", ((e && e.stack) || gpuReason) + " | reason=" + gpuReason);
+    console.warn("[webgpu] 初始化失败，回退服务端：", gpuReason);
+  }
+}
+
+/* ⚠️⚠️ 幂等必须靠**记住进行中的那个 Promise**，不能只判断 `gpuRenderer`。
+ *
+ *    `runGpuSelfTest()` 与 `refreshMeta().then(initBackend)` 是**并发**发起的：
+ *    两个调用都会在第一个 `await` 之前看到 `gpuRenderer === null`
+ *    （因为赋值发生在 `await r.init()` 之后），于是**各建一个 device**。
+ *    两个 device 都 configure 同一个 canvas → 后者的纹理归后者，
+ *    前者渲染时报 "TextureView is associated with [Device] …"，
+ *    整条 command buffer 被静默丢弃 → **输出全黑且不报错**。
+ *
+ *    只看结果状态的幂等是**假幂等**：并发的调用者都还没看到结果。
+ *    正确做法是把"进行中的 Promise"本身存下来，后来者直接 await 它。
+ */
+function initBackend(){
+  if (gpuRenderer && gpuReady) return Promise.resolve();
+  if (gpuInitPromise) return gpuInitPromise;
+  gpuInitPromise = _initBackendOnce().finally(() => { gpuInitPromise = null; });
+  return gpuInitPromise;
+}
+
+/* 画布尺寸：后备缓冲 = 网格；CSS 尺寸由 applyZoom 统一管 */
+function gpuSyncCanvas(){
+  if (!backendActive() || !gpuRenderer || !gpuRenderer.scene) return;
+  const g = gpuRenderer.scene;
+  const c = $("gpuCanvas");
+  if (c.width !== g.W || c.height !== g.H){ c.width = g.W; c.height = g.H; }
+}
+
+async function gpuEnsureScene(force){
+  if (!backendActive()) return false;
+  const key = sceneKeyNow();
+  if (!force && key === gpuSceneKey && gpuRenderer.scene) return true;
+  const r = await fetch("/api/scene?" + qs({ parts: "scene,assets" }));
+  const buf = await r.arrayBuffer();
+  const pack = GpuRenderer.decodePack(buf);
+  gpuRenderer.setScene(pack);
+  gpuRenderer.setAssets(pack);          // 一次性拿到 assets（parts 里带了）
+  gpuSceneKey = key;
+  gpuAssetsKey = assetsKeyNow();
+  logicalSize = pack.meta.grid.slice();
+  if (zoomAuto) zoom = fitZoom();
+  gpuSyncCanvas();
+  applyZoom();
+  gpuPreviewStats = gpuStatsFromPack(pack);
+  updateReadoutGpu();
+  gpuLoopSelfCheck();
+  return true;
+}
+
+/* 只刷新"素材"（色板 / 核 / 粒子）—— 拖滑杆时用，debounce 过 */
+let gpuAssetsTimer = 0;
+function gpuScheduleAssets(){
+  if (!backendActive()) return;
+  clearTimeout(gpuAssetsTimer);
+  gpuAssetsTimer = setTimeout(async () => {
+    if (!backendActive()) return;
+    const key = assetsKeyNow();
+    if (key === gpuAssetsKey) return;
+    try{
+      const r = await fetch("/api/scene?" + qs({ parts: "assets" }));
+      const pack = GpuRenderer.decodePack(await r.arrayBuffer());
+      // 只带 assets 的包没有 base/far —— 把它们补回去，否则 setScene 会清掉缓冲
+      const merged = {
+        meta: Object.assign({}, gpuRenderer.scene.meta, pack.meta),
+        segs: Object.assign({}, gpuRenderer._sceneSegs, pack.segs)
+      };
+      gpuRenderer.setAssets(merged);
+      gpuAssetsKey = key;
+      // ⚠️⚠️ gpuStatsFromPack 会把 loop_ok 重置回 null（"检测中…"）。
+      //    旧版本在这里直接覆盖，于是**每拖一次素材类滑杆，
+      //    循环闭合读数就永远卡回"检测中…"** —— 没有任何人再跑一次自检
+      //    （gpuLoopSelfCheck 只在 gpuEnsureScene 里被调）。
+      //    修法：保留旧 verdict（循环闭合是结构性质，不随色板/粒子变），
+      //    再重跑一次自检刷新。
+      const prev = gpuPreviewStats;
+      gpuPreviewStats = gpuStatsFromPack(merged);
+      if (prev){
+        gpuPreviewStats.loop_ok = prev.loop_ok;
+        gpuPreviewStats.loop_diff = prev.loop_diff;
+      }
+      updateReadoutGpu();
+      gpuLoopSelfCheck();
+    } catch (e){ /* 素材刷新失败不打断渲染，继续用旧色板 */ }
+  }, 260);
+}
+
+function gpuStatsFromPack(pack){
+  const m = pack.meta;
+  return {
+    grid: m.grid, scale: m.scale, out_size: m.out_size,
+    palette_size: m.palette_len || 0,
+    light_xy_used: m.light_xy,
+    dust_count: m.dust_count || 0,
+    loop_ok: null, loop_diff: null, loop_err: null
+  };
+}
+
+/* ⭐ 在 GPU 上自检循环闭合：frame(t=1) 是否与 frame(t=0) 逐位相同。
+ *
+ * 这是时序铁律 3 的直接检验，而且是在**真实 GPU 上**跑的 ——
+ * 验收台已经证明过着色器的循环性，这里再确认一次"组装起来之后"仍然成立。
+ * 一次读回很便宜（只做一次，不是每帧）。
+ */
+const _gpuReadBuf = { buf: null, size: 0 };
+let gpuSelfCheckBusy = false, gpuSelfCheckPending = false;
+async function gpuLoopSelfCheck(){
+  if (!backendActive() || !gpuRenderer || !gpuRenderer.scene) return;
+  // ⚠️ 重入守卫：拖素材类滑杆时 gpuScheduleAssets 每次都会调这里，
+  //    上一次还没跑完就再来一次会互相踩（并发 render + 同一个读回缓冲）。
+  //    忙时记一个"待办"，跑完补一次 —— 只保留最新一份结论。
+  if (gpuSelfCheckBusy){ gpuSelfCheckPending = true; return; }
+  gpuSelfCheckBusy = true;
+  try {
+    await gpuLoopSelfCheckInner();
+  } finally {
+    gpuSelfCheckBusy = false;
+    if (gpuSelfCheckPending){ gpuSelfCheckPending = false; gpuLoopSelfCheck(); }
+  }
+}
+async function gpuLoopSelfCheckInner(){
+  const r = gpuRenderer, d = r.dev;
+  const bytes = r.scene.npix * 4;
+  if (!_gpuReadBuf.buf || _gpuReadBuf.size !== bytes){
+    if (_gpuReadBuf.buf) _gpuReadBuf.buf.destroy();
+    _gpuReadBuf.buf = d.createBuffer({
+      size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    _gpuReadBuf.size = bytes;
+  }
+  const shot = (t) => {
+    r.render(P, t);
+    const enc = d.createCommandEncoder();
+    enc.copyBufferToBuffer(r.buf.packed, 0, _gpuReadBuf.buf, 0, bytes);
+    d.queue.submit([enc.finish()]);
+    return _gpuReadBuf.buf.mapAsync(GPUMapMode.READ).then(() => {
+      const a = new Uint32Array(_gpuReadBuf.buf.getMappedRange().slice(0));
+      _gpuReadBuf.buf.unmap();
+      return a;
+    });
+  };
+  try{
+    const a = await shot(0.0);
+    const b = await shot(1.0);
+    let mx = 0;
+    for (let i = 0; i < a.length; i++){
+      const d0 = Math.abs((a[i] & 0xFFFFFF) - (b[i] & 0xFFFFFF));
+      if (d0 > mx) mx = d0;
+    }
+    gpuPreviewStats.loop_ok = (mx === 0);
+    gpuPreviewStats.loop_diff = mx;
+    updateReadoutGpu();
+  } catch (e){
+    // ⚠️ 自检失败必须**可见**。旧版本静默把 loop_ok 留在 null ——
+    //    读数就永远停在「检测中…」，用户以为是在等，其实已经炸了。
+    psErr("loop-selfcheck", (e && e.message) || String(e));
+    gpuPreviewStats.loop_ok = null;
+    gpuPreviewStats.loop_err = (e && e.message) || String(e);
+    updateReadoutGpu();
+  }
+  r.render(P, cur / Math.max(1, frameCount || 1));
+}
+
+/* GPU 模式下的仪表读数：只报我们**真的知道**的东西。
+ * ⚠️ 服务端那套"相邻帧差/半周期差"需要整段帧，GPU 模式下没有 —— 
+ *    与其编一个数出来，不如空着并说明原因。 */
+function updateReadoutGpu(){
+  const st = gpuPreviewStats;
+  if (!st){ $("readout").innerHTML = ""; return; }
+  const cells = [
+    {k:"渲染后端", v: "WebGPU（浏览器内）", c:"ok"},
+    {k:"设备", v: gpuInfo || "—"},
+    {k:"循环闭合 frame(0)==frame(N)",
+     v: st.loop_err ? ("自检失败：" + st.loop_err)
+      : (st.loop_ok === null ? "检测中…" : (st.loop_ok ? "逐位相同" : "接缝 " + st.loop_diff)),
+     c: st.loop_err ? "bad" : (st.loop_ok === null ? "" : (st.loop_ok ? "ok" : "bad"))},
+    {k:"色板", v: st.palette_size + " 色（服务端定，全片共用）", c:"ok"},
+    {k:"网格 / 输出", v: `${st.grid[0]}×${st.grid[1]} ×${st.scale} → ${st.out_size[0]}×${st.out_size[1]}`},
+    {k:"显示倍率", v: (zoomAuto ? tr("适应") + " " : "") + "×" + zoom +
+      `  (${st.grid[0] * zoom}×${st.grid[1] * zoom} 屏幕像素)`},
+    {k:"尘埃", v: st.dust_count + " 颗（u32 定点原子加）"},
+    {k:"光源位置(用到的)", v: st.light_xy_used.map(x => x.toFixed(2)).join(", ")},
+  ];
+  $("readout").innerHTML = cells.map(c => `<div class="cell"><div class="k">${tr(c.k)}</div>
+      <div class="v ${c.c || ""}">${c.v}</div></div>`).join("");
+  $("readout").insertAdjacentHTML("beforeend",
+    `<div class="cell"><div class="k">${tr("说明")}</div>
+     <div class="v">GPU 模式下相邻帧差/动画幅度需要整段帧，未统计；
+     服务端渲染时才有。切到「服务端」可看完整仪表。</div></div>`);
+  decorateReadout();
+}
+
+/* GPU 播放：用 requestAnimationFrame 直接推 t，不再逐帧取图 */
+function gpuPlay(){
+  stopPlay();
+  const secs = Math.max(0.5, +P.seconds || 6);
+  const t0 = performance.now() - (cur / Math.max(1, frameCount || 1)) * secs * 1000;
+  playing = true;
+  $("btnPlay").textContent = tr("暂停");
+  const step = () => {
+    if (!playing || !backendActive()) return;
+    const el = (performance.now() - t0) / 1000;
+    const t = (el / secs) % 1;
+    cur = Math.floor(t * frameCount);
+    gpuRenderer.render(P, t);
+    $("plate").textContent = `${tr("帧")} ${cur} / ${Math.max(0, frameCount - 1)}`;
+    $("scrubT").textContent = "t = " + t.toFixed(2);
+    $("scrub").value = cur;
+    updateMarker();
+    gpuRaf = requestAnimationFrame(step);
+  };
+  gpuRaf = requestAnimationFrame(step);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════
+ * 浏览器内自检（`?selftest=1`）
+ *
+ * 为什么要有它：浏览器侧的 WebGPU 代码**只有在真浏览器里才会执行**，
+ * 所以"着色器能编译""管线建得起来""链跑得通""循环闭合"这些问题，
+ * 按常理只能在打开浏览器后才发现。
+ *
+ * 这个自检把结果 POST 回服务端（复用参数存档接口，不新增路由），
+ * 于是**无人值守的脚本也能验证真实浏览器里的 WebGPU 路径** ——
+ * 无头 Edge/Chrome 打开 ?selftest=1 就够了。
+ *
+ * 报告里带一帧的**原始打包像素**（base64），这样服务端能拿它和
+ * 自己（或验收台）渲染的同一帧逐像素比对 —— 那才是真正的端到端验证。
+ * ══════════════════════════════════════════════════════════════════ */
+function _b64(u8){
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s);
+}
+
+async function runGpuSelfTest(){
+  const rep = { ok:false, stage:"start", ts:Date.now() };
+  try{
+    rep.stage = "navigator.gpu";
+    if (!("gpu" in navigator)){ rep.reason = "navigator.gpu 不存在"; throw new Error(rep.reason); }
+
+    rep.stage = "adapter";
+    // ⚠️ 用 initBackend 建好的那一个 renderer，**不要在这里 new 第二个**。
+    //    一个 canvas 只能归一个 device；两个 device 各 configure 一次之后，
+    //    先建的那个渲染时会被 WebGPU 拒绝（纹理属于另一个 device），
+    //    整条 command buffer 被丢掉 → 全黑 + 不报错。
+    await initBackend();
+    if (!gpuReady || !gpuRenderer) throw new Error("WebGPU 不可用：" + (gpuReason || "未知"));
+    const r = gpuRenderer;
+    rep.adapter = r.info;
+    // 设备级错误也要抓（上传/建缓冲的错会在这里）
+    r.dev.addEventListener("uncapturederror", (ev) => {
+      (rep.gpuErrors = rep.gpuErrors || []).push("uncaptured: " + ev.error.message);
+    });
+    rep.limits = r.dev.limits ? {
+      maxStorageBufferBindingSize: r.dev.limits.maxStorageBufferBindingSize,
+      maxBufferSize: r.dev.limits.maxBufferSize,
+      maxComputeWorkgroupsPerDimension: r.dev.limits.maxComputeWorkgroupsPerDimension
+    } : null;
+    // 设备级错误也要抓（上传/建缓冲的错会在这里）
+    r.dev.addEventListener("uncapturederror", (ev) => {
+      (rep.gpuErrors = rep.gpuErrors || []).push("uncaptured: " + ev.error.message);
+    });
+    rep.limits = r.dev.limits ? {
+      maxStorageBufferBindingSize: r.dev.limits.maxStorageBufferBindingSize,
+      maxBufferSize: r.dev.limits.maxBufferSize,
+      maxComputeWorkgroupsPerDimension: r.dev.limits.maxComputeWorkgroupsPerDimension
+    } : null;
+
+    // ⚠️⚠️ 捕获 GPU 侧的校验错误。
+    //
+    //    实测第一次跑通时**所有缓冲都是 0**（连直接从场景包上传的 base/far 也是），
+    //    但 render() 返回 true、submit 不抛异常 —— 因为 WebGPU 的校验错误
+    //    默认**只是在控制台打一行警告**，命令缓冲被静默丢弃。
+    //    没有这个 error scope，就只能看到"输出全黑"然后瞎猜。
+    r.dev.pushErrorScope("validation");
+    r.dev.pushErrorScope("out-of-memory");
+    rep.gpuErrors = [];
+
+    // ⚠️⚠️ 捕获 GPU 侧的校验错误。
+    //
+    //    实测第一次跑通时**所有缓冲都是 0**（连直接从场景包上传的 base/far 也是），
+    //    但 render() 返回 true、submit 不抛异常 —— 因为 WebGPU 的校验错误
+    //    默认**只是在控制台打一行警告**，命令缓冲被静默丢弃。
+    //    没有这个 error scope，就只能看到"输出全黑"然后瞎猜。
+    r.dev.pushErrorScope("validation");
+    r.dev.pushErrorScope("out-of-memory");
+    rep.gpuErrors = [];
+
+    rep.stage = "scene";
+    // ⚠️ 把**完整参数串**回报回去。第一版只回了网格，服务端只能"猜"参数
+    //    （按网格反推 grid_long/work_long）—— 结果拿到的是**另一张素材**，
+    //    于是逐像素比对 100% 不一致，白追一轮。
+    //    参数必须原样重放，不能反推。
+    rep.query = qs({});
+    const resp = await fetch("/api/scene?" + qs({ parts: "scene,assets" }));
+    if (!resp.ok) throw new Error("取场景包失败 HTTP " + resp.status);
+    const pack = GpuRenderer.decodePack(await resp.arrayBuffer());
+    r.setScene(pack);
+    r.setAssets(pack);
+    rep.grid = [r.scene.W, r.scene.H];
+    // ⚠️ 量一下**解码后的源字节**。这能把"包解错了"与"上传失败了"分开 ——
+    //    实测所有 GPU 缓冲都是 0（连只上传不参与计算的 base/far 也是），
+    //    光看 GPU 侧分不清是哪一种。
+    rep.srcStats = {};
+    for (const k in pack.segs) {
+      const u8 = pack.segs[k];
+      // ⚠️ 先 `slice()` 复制一份再用 Float32Array 视图。
+      //    直接 `new Float32Array(u8.buffer, u8.byteOffset, n)` 要求
+      //    byteOffset 是 4 的倍数 —— 而**服务端刚修好这个**（头部与每段都补齐），
+      //    所以这里本不该不对齐。回报 byte_off 是为了**确认**服务端真的是新代码，
+      //    而不是继续猜。
+      const copy = u8.slice();
+      const f = new Float32Array(copy.buffer, 0, Math.floor(copy.byteLength / 4));
+      let mn = Infinity, mx = -Infinity, sum = 0, nz = 0;
+      for (let i = 0; i < f.length; i++) {
+        const v = f[i];
+        if (v < mn) mn = v; if (v > mx) mx = v; sum += v;
+        if (v !== 0) nz++;
+      }
+      rep.srcStats[k] = { bytes: u8.byteLength, n: f.length,
+        byte_off: u8.byteOffset, align4: (u8.byteOffset % 4 === 0),
+        min: +mn.toFixed(5), max: +mx.toFixed(5),
+        mean: +(sum / f.length).toFixed(5),
+        nonzero_pct: +(100 * nz / f.length).toFixed(2) };
+    }
+    rep.palette_len = pack.meta.palette_len;
+    rep.dust_count = pack.meta.dust_count;
+    rep.bloom_kernels = pack.meta.bloom_kernels_total;
+
+    rep.stage = "render";
+    // 先渲一次确认链能跑
+    if (!r.render(P, 0)) throw new Error("render() 返回 false");
+
+    rep.stage = "readback";
+    const bytes = r.scene.npix * 4;
+    const rb = r.dev.createBuffer({
+      size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const shot = async (t) => {
+      r.render(P, t);
+      const enc = r.dev.createCommandEncoder();
+      enc.copyBufferToBuffer(r.buf.packed, 0, rb, 0, bytes);
+      r.dev.queue.submit([enc.finish()]);
+      await r.dev.queue.onSubmittedWorkDone();
+      await rb.mapAsync(GPUMapMode.READ);
+      const a = new Uint8Array(rb.getMappedRange().slice(0));
+      rb.unmap();
+      return a;
+    };
+    const f0 = await shot(0.0);
+    const f1 = await shot(1.0);
+    rep.stage = "loopcheck";
+    let mx = 0;
+    for (let i = 0; i < f0.length; i++){
+      const d = Math.abs(f0[i] - f1[i]);
+      if (d > mx) mx = d;
+    }
+    rep.loop_max_diff = mx;
+    rep.loop_ok = (mx === 0);
+
+    // 再看 t=0.37 那一帧（非平凡时刻），把它回传做逐像素比对
+    //
+    // ⚠️ 同时回传**中间量**（尘埃后 / 辉光后）。只比最终 u8 的话，
+    //    70% 的像素差 1 个色阶这种形态分不清是"整条链都差一点"还是
+    //    "某一阶段差得多、被色板边界放大了"。逐阶段比才能定位。
+    const shotBuf = async (buf, nBytes) => {
+      const tb = r.dev.createBuffer({
+        size: nBytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      r.render(P, 0.37);
+      const e3 = r.dev.createCommandEncoder();
+      e3.copyBufferToBuffer(buf, 0, tb, 0, nBytes);
+      r.dev.queue.submit([e3.finish()]);
+      await r.dev.queue.onSubmittedWorkDone();
+      await tb.mapAsync(GPUMapMode.READ);
+      const a = new Uint8Array(tb.getMappedRange().slice(0));
+      tb.unmap(); tb.destroy();
+      return a;
+    };
+    rep.mid_lit_b64 = _b64(await shotBuf(r.buf.lit, r.scene.n3 * 4));
+    rep.mid_dusted_b64 = _b64(await shotBuf(r.buf.dusted, r.scene.n3 * 4));
+    rep.mid_composed_b64 = _b64(await shotBuf(r.buf.composed, r.scene.n3 * 4));
+
+    const f37 = await shot(0.37);
+    // ⭐ 中间量诊断：把每个阶段的关键缓冲读回来报统计。
+    //
+    // ⚠️ 这一步是必需的，不是可选调试。实测第一次跑通时浏览器输出**全黑**，
+    //    但 render() 返回 true、循环也"逐位相同"（黑 == 黑）——
+    //    没有中间量就只能瞎猜是十个 pass 里的哪一个坏的。
+    //    有了它，一眼看出断在哪。
+    rep.stage = "diag";
+    const diag = {};
+    for (const nm of ["base", "far", "palette", "a", "lit", "dusted",
+                      "bright", "acc", "composed", "packed"]) {
+      const buf = r.buf[nm];
+      if (!buf) { diag[nm] = "（无此缓冲）"; continue; }
+      const sz = buf.size;
+      const n = Math.min(sz, 4 * 1024 * 1024);
+      const tb = r.dev.createBuffer({
+        size: n, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const e2 = r.dev.createCommandEncoder();
+      e2.copyBufferToBuffer(buf, 0, tb, 0, n);
+      r.dev.queue.submit([e2.finish()]);
+      await r.dev.queue.onSubmittedWorkDone();
+      await tb.mapAsync(GPUMapMode.READ);
+      const arr = new Float32Array(tb.getMappedRange().slice(0));
+      tb.unmap(); tb.destroy();
+      let mn = Infinity, mx = -Infinity, sum = 0, nz = 0;
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (!isFinite(v)) { diag[nm] = "含 NaN/Inf"; break; }
+        if (v < mn) mn = v; if (v > mx) mx = v; sum += v;
+        if (v !== 0) nz++;
+      }
+      if (typeof diag[nm] !== "string") {
+        diag[nm] = {
+          bytes: sz,
+          min: +mn.toFixed(5), max: +mx.toFixed(5),
+          mean: +(sum / arr.length).toFixed(5),
+          nonzero_pct: +(100 * nz / arr.length).toFixed(2)
+        };
+      }
+    }
+    rep.diag = diag;
+
+    // 收错误 scope
+    rep.stage = "errorscopes";
+    const eOom = await r.dev.popErrorScope();
+    const eVal = await r.dev.popErrorScope();
+    if (eOom) rep.gpuErrors.push("OOM: " + eOom.message);
+    if (eVal) rep.gpuErrors.push("validation: " + eVal.message);
+
+    rep.stage = "encode";
+    rep.frame37_b64 = _b64(f37);
+    rep.frame37_bytes = f37.length;
+    // 简单校验和，方便脚本粗比
+    let sum = 0; for (let i = 0; i < f37.length; i++) sum = (sum + f37[i]) >>> 0;
+    rep.frame37_sum = sum;
+
+    rep.stage = "done";
+    rep.ok = true;
+  } catch (e){
+    rep.reason = (e && e.message) ? e.message : String(e);
+    rep.err = String(e);
+  }
+  try{
+    await fetch("/api/params", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "_webgpu_selftest", params: rep })
+    });
+  } catch (e){ /* 服务端拿不到就算了 */ }
+  document.title = "SELFTEST:" + (rep.ok ? "OK" : "FAIL:" + (rep.reason || "?"));
+  return rep;
+}
+
+(async function init(){
+  P = Object.assign({}, DEFAULTS);
+  defaults = Object.assign({}, DEFAULTS);
+
+  ps("init:start");
+  psScopeProbe();
+  await loadAssets();
+  ps("init:loadAssets done");
+  bindUpload();
+  buildRail();
+  fillSweepKeys();
+  $("asset").onchange = () => { syncPicker(); sceneStale = true; refreshMeta(); renderPreview(); if (debugOn()) setTimeout(refreshDebug, 400); };
+  ["dbgDepth", "dbgLuma", "dbgVol"].forEach(id => { $(id).onchange = refreshDebug; });
+
+  $("btnPreview").onclick = renderPreview;
+  $("showMarker").onchange = updateMarker;
+  $("btnLang").onclick = () => {
+    LANG = (LANG === "en") ? "zh" : "en";
+    try { localStorage.setItem("pa_lang", LANG); } catch (e2) {}
+    applyLang();
+  };
+  if (LANG !== "zh") applyLang();          // 上次选了英文 → 载入即切换
+  $("btnZoomIn").onclick = () => zoomBy(1);
+  $("btnZoomOut").onclick = () => zoomBy(-1);
+  $("btnZoomFit").onclick = () => setZoom(fitZoom(), false);
+  bindZoom();
+  bindPan();
+  window.addEventListener("resize", updateMarker);
+  $("btnReset").onclick = () => { P = Object.assign({}, defaults); buildRail(); sceneStale = true; renderPreview(); };
+  $("btnExport").onclick = doExport;
+  $("btnSave").onclick = saveParams;
+  $("btnLoad").onclick = loadParams;
+  $("btnSweep").onclick = doSweep;
+  initRoHeight();
+  $("btnPlay").onclick = onPlayClick;
+  $("scrub").oninput = () => { stopPlay(); cur = +$("scrub").value;
+    // 参数变了（frames 失效）就按需渲这一帧的单帧，而不是放旧帧
+    if (framesValid && frames[cur]) $("frame").src = frames[cur];
+    else renderStillOnly();
+    $("plate").textContent = `${tr("帧")} ${cur} / ${Math.max(0, frameCount - 1)}`;
+    $("scrubT").textContent = "t = " + (cur / Math.max(1, frameCount)).toFixed(2); };
+
+
+  // ⭐ `?selftest=1` 时**只跑自检，然后结束** —— 不要继续走正常启动流程。
+  //
+  // ⚠️ 曾经是"跑自检 + 照常启动"，结果是两者**并发**，互相破坏：
+  //    · 两边都调 initBackend → 两个 device 抢同一个 canvas
+  //      → "TextureView is associated with [Device]" → command buffer 被丢弃
+  //    · 正常流程的 gpuEnsureScene 会 `_destroyAll()` —— 把自检刚建好、
+  //      刚上传完数据的缓冲**全销毁重建**，于是自检读回来全是 0
+  //      （连 base/far 都是 0，让人误以为"上传失败"，实测白追了一轮）
+  //
+  //    自检是**独立路径**，就该独立跑完。共用状态只会让两边都不可信。
+  if (location.search.indexOf("selftest=1") >= 0){
+    await runGpuSelfTest();
+    return;
+  }
+
+  // ⚠️ 只在**还没有任何渲染在进行**时设置这句文案。
+  //    原实现无条件覆盖 —— 而 `init()` 早先已经发起过一次渲染（走服务端路径，
+  //    可能正在跑几十秒），于是这里把"重建场景中…"盖回成"首次渲染需要…"，
+  //    **用户看到的进度提示与实际进展脱节**（实测截图就是这个形态）。
+  if (!busy){
+    $("badge").textContent = "首次渲染需要跑一次深度推理…";
+    $("badge").classList.add("on", "busy");
+  }
+  $("btnBackend").onclick = async () => {
+    // ⚠️ 两个方向的文案都要说清"点了会发生什么" ——
+    //    之前只写"点此恢复自动"，用户不知道"自动"就是 GPU。
+    backendPref = (backendPref === 'server') ? 'auto' : 'server';
+    if (backendPref === 'server'){
+      stopPlay();                     // ⚠️ GPU 播放循环靠 backendActive() 存活，切走必须先停
+      gpuReady = false;
+      $("stagebox").classList.remove("gpu");
+      gpuBtn("server", "后端：服务端 · 点此启用 GPU", "当前用服务端渲染（CPU）。点一下改用浏览器里的 WebGPU");
+      toast("已切到服务端渲染（CPU）", "ok");
+    } else {
+      busyBadge("开启 WebGPU…");
+      await initBackend();
+      if (gpuReady){
+        gpuSceneKey = "";             // 强制重传场景
+        $("stagebox").classList.add("gpu");
+        toast("已切到 GPU 渲染（" + gpuInfo + "）", "ok");
+      } else {
+        backendPref = 'server';       // 开不出来就留在服务端，别停在半开状态
+        toast("这台浏览器拿不到 WebGPU，保持服务端渲染", "bad");
+      }
+    }
+    sceneStale = true;
+    renderPreview();
+  };
+  // 先取逻辑尺寸把取景框定准，再渲首图 —— 否则首屏会先按错误尺寸闪一下
+  ps("init:进入后端初始化");
+  refreshMeta()
+    .then(() => { ps("refreshMeta done"); return initBackend(); })
+    .then(() => { ps("initBackend done", { gpuReady: gpuReady, info: gpuInfo });
+                  return renderPreview(); })
+    .then(() => { ps("首图完成");
+                   if (location.search.indexOf("probe=ui") >= 0) runUiProbe(); })
+    .catch((e) => { psErr("startup-chain", (e && e.stack) || e); });
+})();
+</script>
+</body>
+</html>
